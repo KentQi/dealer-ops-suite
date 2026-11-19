@@ -531,6 +531,8 @@ Windows / PowerShell 见第 0 节；`--out` 属于 `load_master.py`，`recon_eng
 | `scripts/load_master.py` | 主档 → 引擎配置（`--pay` 缺省取合同付款日；`--strict` 严格预检；`--out` 指定输出） |
 | `scripts/recon_engine.py` | 对账引擎（9–10 表 + 贴花模块 + L1–L5 确定性校验；只读 `RECON_CFG`；覆盖保护写 `_v2`） |
 | `scripts/writeback_ledger.py` | B5 台账回写：把期间 / 结算 / 差异 / 贴花 / 状态写入主档「期间」表；默认 dry-run，`--write` 落盘，自动备份、同期间幂等更新 |
+| `scripts/review_contract_package.py` | 合同包确定性审阅：必填/格式/日期/金额/比例/目标/返利/保证金/附件日期/政策表；输出阻断、高、中、低「需确认项」 |
+| `references/合同包审阅.md` | 合同包 LLM 语义审阅协议：审阅维度、输出 schema、严重度、合并方式与硬规则 |
 | `scripts/make_review_packet.py` | 工作簿 → 复核包（packet JSON/MD；含哈希、figures、claims、cross_refs、redline_scan） |
 | `scripts/apply_review.py` | 复核报告校验与落盘（默认 dry-run；`--apply` 写 `10-复核记录` + 复核锁；`--check` 交付前校验） |
 | `scripts/review_common.py` | 复核层共享常量（schema / 枚举 / R1–R10 清单 / 哈希工具） |
@@ -573,7 +575,7 @@ Windows / PowerShell 见第 0 节；`--out` 属于 `load_master.py`，`recon_eng
 | DX | 示例品牌经销合同-DX.docx | `经销合同模板/标准合同/铺货代销/` |
 | FC | 示例品牌经销合同-附件一 线下经销商防窜货管理规定.docx | 上述两个目录各有一份（内容相同） |
 
-字段清单与校验口径见 `references/field-map.md`；确认清单的呈现格式见 `references/confirm-template.md`；校验项与错误码见 `references/validation-rules.md`。
+字段清单与校验口径见 `references/field-map.md`；确认清单的呈现格式见 `references/confirm-template.md`；校验项与错误码见 `references/validation-rules.md`；合同包确定性审阅与 LLM 语义审阅见 `references/合同包审阅.md`。
 
 ### 硬边界（任何情况下不得突破）
 
@@ -584,6 +586,7 @@ Windows / PowerShell 见第 0 节；`--out` 属于 `load_master.py`，`recon_eng
 5. **不动附件一违约金标准表**：违约金标准以合同附件为准，除用户明确要求外不改。
 6. **不覆盖模板**：永远另存为新文件；模板文件只读。
 7. **不确定就停**：定位失败、清单外空白、用户给的值看不懂——停下来问，不猜。
+8. **写入前必须过合同包审阅**：确定性审阅有 `blocker` 不得写入；`high` 未逐条确认，不得说“审阅通过”。
 
 ### 流程
 
@@ -646,6 +649,37 @@ python3 $SKILL/scripts/build_plan.py --spec $SPEC/jx.json \
 > 本地代码无法区分「用户改了主意」与「文件被篡改」。缓解只能靠流程：
 > `values.json` 在收到用户那条确认消息后立即生成，交付前逐项与原始消息回显核对；
 > 把用户确认消息与 `values.json` 一起归档，`spec` 只由本 skill 维护。
+
+#### 步骤 3.5 · 合同包审阅（写入前必过）
+
+确定性审阅（主合同 + 附件 + 政策表）：
+
+```bash
+python3 $SKILL/scripts/review_contract_package.py \
+  --spec $SPEC/jx.json --values /tmp/cfj-values.json \
+  --fc-spec $SPEC/fc.json --fc-values /tmp/cfj-fc-values.json \
+  --policy "<价格政策表.xlsx>" \
+  --out /tmp/合同审阅.json --md /tmp/合同审阅.md
+```
+
+（附件日期若已并入同一份 `values.json`，`--fc-values` 可直接指向该文件。）
+
+- 退出码 `1`（存在 `blocker`）→ **不得写入**；先修值 / 修合同包，再重跑。
+- `high` → 逐条让用户确认；未确认不得说“审阅通过”。
+- `medium` / `low` → 一并转述，不能静默丢弃。
+- 没有提供 `--fc-values` 或 `--policy` → 报告会写“未覆盖”；**不能把没查说成没问题**。
+
+LLM 语义审阅按 [references/合同包审阅.md](references/合同包审阅.md) 执行，产出 `llm-findings.json` 后合并：
+
+```bash
+python3 $SKILL/scripts/review_contract_package.py \
+  --spec $SPEC/jx.json --values /tmp/cfj-values.json \
+  --fc-spec $SPEC/fc.json --fc-values /tmp/cfj-fc-values.json \
+  --policy "<价格政策表.xlsx>" --llm-findings /tmp/llm-findings.json \
+  --out /tmp/合同审阅.json --md /tmp/合同审阅.md
+```
+
+审阅结论必须引用原文（文件 + 条款 + 原文）；LLM 不改合同、不出法律意见；用户不确认，不算通过。
 
 #### 步骤 4 · 写入
 
