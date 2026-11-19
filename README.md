@@ -28,10 +28,11 @@ Dealer Ops Suite 把这些问题收进两条完整工作流：**填合同**与**
 
 ## 两张图
 
-- [架构图](docs/architecture.html)：入口、插件清单、SKILL.md 路由、四类能力、支撑资源与交付物。
-- [业务流程图](docs/business-workflow.html)：谈客户 → 定政策 → 合同与资料 → 签署 → 订单发货（Skill 外）→ 客户销售 → 建台账 → 生成待办 → 对账。
+- [架构图](https://kentqi.github.io/dealer-ops-suite/architecture.html)：入口、插件清单、SKILL.md 路由、四类能力、支撑资源与交付物。
+- [业务流程图](https://kentqi.github.io/dealer-ops-suite/business-workflow.html)：谈客户 → 定政策 → 合同与资料 → 签署 → 订单发货（Skill 外）→ 客户销售 → 建台账 → 生成待办 → 对账。
+- [项目首页](https://kentqi.github.io/dealer-ops-suite/)：两张图的入口。
 
-> GitHub 直接点击 HTML 可能显示源码。下载后用浏览器打开，或启用 GitHub Pages 后在线查看。
+也可以下载 `docs/architecture.html` 与 `docs/business-workflow.html`，用浏览器离线打开。
 
 ## 目录
 
@@ -41,8 +42,10 @@ Dealer Ops Suite 把这些问题收进两条完整工作流：**填合同**与**
 ├── README.md
 ├── LICENSE
 ├── docs/
+│   ├── index.html
 │   ├── architecture.html
 │   ├── business-workflow.html
+│   ├── SANITIZATION.md
 │   └── source/
 │       ├── architecture.json
 │       └── business-workflow.json
