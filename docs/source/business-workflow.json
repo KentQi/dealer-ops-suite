@@ -250,6 +250,17 @@
       "label": "进入待办",
       "variant": "emphasis",
       "role": "main"
+    },
+    {
+      "id": "recon-ledger-writeback",
+      "from": "recon",
+      "to": "ledger",
+      "label": "回写期间表",
+      "variant": "emphasis",
+      "role": "return",
+      "fromSide": "right",
+      "toSide": "right",
+      "labelSegment": 1
     }
   ],
   "cards": [
@@ -266,7 +277,8 @@
       "title": "对账能力",
       "items": [
         "进入待办节点后调用 dealer-ops-suite 的 B 段",
-        "原 对账工作流 工作流完整保留"
+        "原对账工作流完整保留",
+        "对账完成后 B5 回写主档「期间」表"
       ]
     },
     {

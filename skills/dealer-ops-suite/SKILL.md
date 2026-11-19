@@ -20,6 +20,7 @@ metadata:
 3. **遇未定义口径 → 输出 `NEED_USER_INPUT` 并停下。不继续、不猜、不给默认值。**
 4. **B 段与 C 段的红线各自独立生效**，不得因为"在另一条流程里"而放宽。
 5. **收单前/出单前的门禁不可跳**：口径未确认不出账（B2）、对外文案未过不出单（B3）、十项验收未过不交付（C5）。
+6. **交付后必须回写台账（B5）**：对账结果（期初 / 结算 / 差异 / 贴花 / 状态）未写入主档「期间」表，视为本次对账未完成；不能只在聊天里报告或口头提醒用户登记。
 
 ## A. 意图路由
 
@@ -94,7 +95,7 @@ py -3 "$SKILL_DIR\scripts\recon_engine.py"
 三份月度导出 ──┐
 主档（六表）──┼─B1 生成配置──B2 引擎计算+自检──▶ 9–10 表对账工作簿（09 由效期开关决定）
               │                                    │
-              └── B3 确定性校验 ──▶ C3 L6 语义复核(R1–R10，必过) ──▶ B4 交付 + 期间表登记
+              └── B3 确定性校验 ──▶ C3 L6 语义复核(R1–R10，必过) ──▶ B4 交付 ──▶ B5 台账回写
 ```
 
 先判断当前在哪一段：
@@ -122,7 +123,7 @@ py -3 "$SKILL_DIR\scripts\recon_engine.py"
 | 合同 | 结算与账期口径 | 合同编号（引擎硬性，用于输出抬头）；结算方式 / 结算基数（进入 00·01 结算口径，缺失写「主档未登记，以合同为准」）；异议期 / 签回期（进入双方确认时限，缺失写「合同约定的…」）；付款日（进入付款期限并决定 `--pay` 缺省日，缺失按次月 5 日）；起始 / 终止 / 价格附件（人工核对与摘要用） |
 | 价格 | 供货价（带生效区间） | 商品条码、供货价、生效起、生效止（只用于「挂账单单价 vs 主档」交叉校验告警，不参与结算取价） |
 | SKU | 商品主数据与结算属性 | 商品条码、标准品名、结算属性（**引擎硬性**：空 / 未知 → 阻断，绝不默认结算类） |
-| 期间 | 历史对账索引 | 期间、数据基准日、结算 / 差异 / 贴花金额、贴花兑付方式（**脚本不读写**；每期对账后由助手或人工追加一行） |
+| 期间 | 历史对账索引 | 期间、数据基准日、结算 / 差异 / 贴花金额、贴花兑付方式（**只由 `writeback_ledger.py` 在 B5 写入**；引擎不读写；同一期间更新，不重复追加） |
 | 贴花 | 销售奖励标准（带生效区间） | 商品条码、贴花标准、生效起、生效止。**表存在时**：本期有动销的每个 SKU 必须有当期记录（显式 0 也算），缺失 / 脏值 / 区间重叠 → 阻断；**整表不存在** → 跳过贴花模块并提示 |
 
 没有主档 → 用 `make_master.py` 生成六表模板（演示行，需整行替换），或走阶段 A 从合同建档。
@@ -281,7 +282,20 @@ Windows / PowerShell 见第 0 节；`--out` 属于 `load_master.py`，`recon_eng
 1. **C1 确定性校验（B3）**：核 stderr 自检行「自检通过（残差 0.00）」，任何「⚠」转述；复算六个数（期初 / 结算 / 差异的件数与金额）；断言 `结算金额 − 差异金额（带符号） + 次月已销货值 = 期初货值 − 期末库存货值`，贴花合计独立复算。引擎已对六条恒等式逐条显式校验（不用 `assert`，`python -O` 下也不会静默失效）。
 2. **C2 生成复核包**：`python3 "$SKILL_DIR/scripts/make_review_packet.py" "<工作簿.xlsx>" --master "<_主档.xlsx>" --out /tmp/复核包.json --md /tmp/复核包.md`。
 3. **C3 L6 LLM 语义复核（交付前必过）**：由**当前 harness 的 LLM** 按 [references/复核协议.md](references/复核协议.md) 的 R1–R10 逐项复核（脚本不调用外部模型），产出报告 JSON；`python3 "$SKILL_DIR/scripts/apply_review.py" "<工作簿.xlsx>" "<报告.json>" --packet /tmp/复核包.json --apply` 写入 `10-复核记录`（第 11 张表；旧工作簿仍按 `08-复核记录` 兼容读取）并生成 `_复核记录/复核锁.json`。verdict 不通过 / 有阻断 finding → **不得交付**；复核后任何保存都会使锁失效，必须重评。
-4. **C4 交付与登记（B4）**：交付前跑 `python3 "$SKILL_DIR/scripts/apply_review.py" "<工作簿.xlsx>" --check` 确认「复核有效」；向用户报告应结算金额、贴花金额、差异件数与金额、差异集中的 SKU、数据覆盖期间（流水缺哪几天必须说）；展示 / 打开工作簿，并在主档 `期间` 表追加一行（期初 / 结算 / 差异 / 贴花 / 状态）。
+4. **C4 交付（B4）**：交付前跑 `python3 "$SKILL_DIR/scripts/apply_review.py" "<工作簿.xlsx>" --check` 确认「复核有效」；向用户报告应结算金额、贴花金额、差异件数与金额、差异集中的 SKU、数据覆盖期间（流水缺哪几天必须说）；展示 / 打开工作簿。
+5. **B5 台账回写（必做）**：把本次对账结果写入主档 `期间` 表。先 dry-run 给用户看变更，再 `--write`：
+   ```bash
+   python3 "$SKILL_DIR/scripts/writeback_ledger.py" "<_主档.xlsx>" \
+     --period <YYYYMM> --asof <YYYY-MM-DD> \
+     --opening-qty <n> --opening-amount <n> \
+     --settle-qty <n> --settle-amount <n> \
+     --diff-qty <n> --diff-amount <n> \
+     --sticker-amount <n> --sticker-pay "<抵扣货款|分开支付|待定>" \
+     --statement-no "<对账单编号>" --status "<待确认|已确认|已对账|已付款|已签回|已收款>" \
+     --note "<差异处理结论>"
+   # 确认输出后再加 --write
+   ```
+   同一 `period` 已存在则更新该行，不追加重复行；写前自动备份。**未执行 B5 不得说「本次对账完成」。**
 
 ### 4. 校验体系（五层确定性校验 L1–L5 + L6 LLM 语义复核）
 
@@ -358,7 +372,7 @@ Windows / PowerShell 见第 0 节；`--out` 属于 `load_master.py`，`recon_eng
 2. 让用户把三份导出放进 `YYYYMM/`（或经用户授权后由助手保存到该目录）；
 3. 跑 B1 + B2，把 stderr 的自检行、六个关键数、所有 ⚠ 告警转述给用户；
 4. 展示 / 打开工作簿（无展示能力时给绝对路径）：报告应结算、贴花、差异、流水覆盖期间；
-5. 提醒用户在 `期间` 表登记（或问是否代登记）。
+5. 跑 `writeback_ledger.py` 把本次结果回写 `期间` 表：先 dry-run 给用户看变更，确认后 `--write`；不要只口头提醒用户自己登记。
 
 **「这是新客户，第一次做」**
 1. 要合同电子版（docx 优先）→ 跑 A1；
@@ -492,6 +506,7 @@ Windows / PowerShell 见第 0 节；`--out` 属于 `load_master.py`，`recon_eng
 | `--check` 报「复核无效 / 复核锁缺失 / 哈希不一致」 | 工作簿复核后又被保存，或未做 L6 | 不得交付；重新生成复核包 → 重做 L6 → `--apply` |
 | 复核报告校验失败（checklist 未覆盖 R1–R10、阻断与结论不一致、有警告却判「通过」、摘要为空） | 报告不合规 | 按报错修正报告后重试（规则见 [references/复核协议.md](references/复核协议.md)） |
 | `_数据映射.json` 损坏 / 映射指向不存在的表或列 | 映射与当前源文件不一致 | 重跑 `inspect_schema` 生成映射，经用户确认后再 `--write` |
+| `writeback_ledger.py` 报「未找到『期间』表」/「期间 … 在主档中出现多行」/「找到多个可能的『期间』表」 | 主档表名、表头漂移，或同一期间重复登记 | 先跑 `inspect_schema` / 手工核对；同一期间只保留一行后再回写；不要绕过脚本直接改 Excel |
 | `必须经用户确认`（`apply_mapping.py` 缺 `--confirmed-by`） | 违反确认门禁 | 先 dry-run 展示、用户逐项裁决，再加 `--confirmed-by "<姓名>"` |
 
 回滚要点：主档取 `_备份/` 最近快照覆盖；对账单不覆盖同名文件（写 `_v2`）；`_确认记录/` 归档不动（审计痕迹）。详见 [references/故障与回滚.md](references/故障与回滚.md)。
@@ -514,6 +529,7 @@ Windows / PowerShell 见第 0 节；`--out` 属于 `load_master.py`，`recon_eng
 | `scripts/make_master.py` | 生成空白主档模板（六表）；`--template` 更新 skill 自带模板 |
 | `scripts/load_master.py` | 主档 → 引擎配置（`--pay` 缺省取合同付款日；`--strict` 严格预检；`--out` 指定输出） |
 | `scripts/recon_engine.py` | 对账引擎（9–10 表 + 贴花模块 + L1–L5 确定性校验；只读 `RECON_CFG`；覆盖保护写 `_v2`） |
+| `scripts/writeback_ledger.py` | B5 台账回写：把期间 / 结算 / 差异 / 贴花 / 状态写入主档「期间」表；默认 dry-run，`--write` 落盘，自动备份、同期间幂等更新 |
 | `scripts/make_review_packet.py` | 工作簿 → 复核包（packet JSON/MD；含哈希、figures、claims、cross_refs、redline_scan） |
 | `scripts/apply_review.py` | 复核报告校验与落盘（默认 dry-run；`--apply` 写 `10-复核记录` + 复核锁；`--check` 交付前校验） |
 | `scripts/review_common.py` | 复核层共享常量（schema / 枚举 / R1–R10 清单 / 哈希工具） |
