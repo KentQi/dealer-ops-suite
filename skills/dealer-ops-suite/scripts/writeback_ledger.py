@@ -330,7 +330,7 @@ def main():
     changes = {}
     for key, label, _aliases in FIELDS:
         new = values[key]
-        if new is None:
+        if new is None or key == "period":
             continue
         if key not in mapping:
             print(f"[提示] 主档「期间」表没有「{label}」列，已跳过", file=sys.stderr)
