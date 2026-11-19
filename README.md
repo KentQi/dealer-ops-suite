@@ -90,7 +90,7 @@ Dealer Ops Suite 把这些问题收进两条完整工作流：**填合同**与**
 
 ## 快速开始
 
-> Skill 指令本身不绑定某个 harness。下面以 WorkBuddy 的目录为例；换到其他 harness 时，只需把 `skills/dealer-ops-suite` 放进它的 skills 目录。Office 写入若没有无损编辑通道，Skill 会明确提示能力边界，不会用 python-docx 强改。
+> Skill 指令本身不绑定某个 harness。下面用通用占位路径；WorkBuddy 的目录仅作为注释示例。换到其他 harness 时，只需把 `skills/dealer-ops-suite` 放进它的 skills 目录。Office 写入若没有无损编辑通道，Skill 会明确提示能力边界，不会用 python-docx 强改。
 
 ### 方式一：作为 Agent Plugin
 
