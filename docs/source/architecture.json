@@ -1,0 +1,313 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "dealer-ops-suite 技能架构",
+    "locale": "zh-CN",
+    "output": "dealer-ops-suite-architecture.html",
+    "quality_profile": "showcase"
+  },
+  "components": [
+    {
+      "id": "user",
+      "type": "external",
+      "label": "使用者",
+      "sublabel": "商务 / 财务 / 管理者",
+      "pos": [
+        40,
+        300
+      ],
+      "size": [
+        110,
+        60
+      ]
+    },
+    {
+      "id": "agent",
+      "type": "frontend",
+      "label": "WorkBuddy Agent",
+      "sublabel": "会话入口",
+      "pos": [
+        220,
+        300
+      ],
+      "size": [
+        140,
+        64
+      ]
+    },
+    {
+      "id": "automation",
+      "type": "messagebus",
+      "label": "月度提醒",
+      "sublabel": "每月 1 日 09:00",
+      "pos": [
+        220,
+        520
+      ],
+      "size": [
+        140,
+        64
+      ]
+    },
+    {
+      "id": "manifest",
+      "type": "security",
+      "label": "plugin.json",
+      "sublabel": "插件清单",
+      "tag": "v1.0.0",
+      "pos": [
+        440,
+        120
+      ],
+      "size": [
+        140,
+        60
+      ]
+    },
+    {
+      "id": "skillmd",
+      "type": "backend",
+      "label": "SKILL.md",
+      "sublabel": "意图路由 + 硬规则",
+      "tag": "843 行",
+      "pos": [
+        440,
+        300
+      ],
+      "size": [
+        150,
+        80
+      ]
+    },
+    {
+      "id": "contract",
+      "type": "backend",
+      "label": "合同填写",
+      "sublabel": "C 段 · 主合同与附件",
+      "pos": [
+        680,
+        110
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "recon",
+      "type": "backend",
+      "label": "对账工作",
+      "sublabel": "B 段 · 建档→确认→出账",
+      "pos": [
+        680,
+        250
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "policy",
+      "type": "backend",
+      "label": "政策表自检",
+      "sublabel": "check_policy.py",
+      "pos": [
+        680,
+        390
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "ledger",
+      "type": "backend",
+      "label": "台账待办",
+      "sublabel": "ledger_read.py",
+      "pos": [
+        680,
+        530
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "refs",
+      "type": "database",
+      "label": "references",
+      "sublabel": "9 份协议与口径",
+      "pos": [
+        920,
+        110
+      ],
+      "size": [
+        130,
+        60
+      ]
+    },
+    {
+      "id": "assets",
+      "type": "database",
+      "label": "assets",
+      "sublabel": "模板与对外文案",
+      "pos": [
+        680,
+        30
+      ],
+      "size": [
+        130,
+        60
+      ]
+    },
+    {
+      "id": "output",
+      "type": "external",
+      "label": "交付物",
+      "sublabel": "合同 / 对账工作簿",
+      "pos": [
+        1120,
+        300
+      ],
+      "size": [
+        120,
+        64
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "WorkBuddy 运行时",
+      "wraps": [
+        "agent",
+        "automation"
+      ],
+      "pad": 18
+    },
+    {
+      "kind": "region",
+      "label": "dealer-ops-suite 插件包",
+      "wraps": [
+        "manifest",
+        "skillmd",
+        "contract",
+        "recon",
+        "policy",
+        "ledger",
+        "refs",
+        "assets"
+      ],
+      "pad": 18
+    }
+  ],
+  "connections": [
+    {
+      "id": "ask",
+      "from": "user",
+      "to": "agent",
+      "label": "提出需求",
+      "variant": "emphasis"
+    },
+    {
+      "id": "monthly",
+      "from": "automation",
+      "to": "ledger",
+      "label": "每月触发",
+      "variant": "dashed"
+    },
+    {
+      "id": "discover",
+      "from": "agent",
+      "to": "manifest",
+      "label": "发现插件"
+    },
+    {
+      "id": "declare",
+      "from": "manifest",
+      "to": "skillmd",
+      "label": "声明入口"
+    },
+    {
+      "id": "route-contract",
+      "from": "skillmd",
+      "to": "contract",
+      "label": "合同填写"
+    },
+    {
+      "id": "route-recon",
+      "from": "skillmd",
+      "to": "recon",
+      "label": "对账工作",
+      "variant": "emphasis"
+    },
+    {
+      "id": "route-policy",
+      "from": "skillmd",
+      "to": "policy",
+      "label": "政策自检"
+    },
+    {
+      "id": "route-ledger",
+      "from": "skillmd",
+      "to": "ledger",
+      "label": "台账待办"
+    },
+    {
+      "id": "refs-contract",
+      "from": "refs",
+      "to": "contract",
+      "label": "口径/协议",
+      "variant": "dashed"
+    },
+    {
+      "id": "assets-contract",
+      "from": "assets",
+      "to": "contract",
+      "label": "模板/文案",
+      "variant": "dashed"
+    },
+    {
+      "id": "contract-out",
+      "from": "contract",
+      "to": "output",
+      "label": "输出合同"
+    },
+    {
+      "id": "recon-out",
+      "from": "recon",
+      "to": "output",
+      "label": "输出对账单"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "范围",
+      "items": [
+        "订单与发货不进入本 Skill，按业务约定停在合同后",
+        "对账阶段完整保留原 对账工作流 工作流"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "检查边界",
+      "items": [
+        "政策表只做三类原则性自检：重复条码、门槛冲突、条码非法",
+        "输出统一为「需确认项」，不直接判错"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "运行时说明",
+      "items": [
+        "台账公式无缓存时，ledger_read.py 按 Excel 规则即时计算并标注",
+        "政策自检输出为会话需确认项，台账待办输出为会话消息"
+      ]
+    }
+  ]
+}

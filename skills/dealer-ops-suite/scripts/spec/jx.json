@@ -1,0 +1,555 @@
+{
+  "doc_key": "JX",
+  "title": "示例品牌经销合同（经销版）",
+  "version": "1.0.0",
+  "fields": [
+    {
+      "id": "JX-01",
+      "label": "主合同编号",
+      "where": "首页抬头「主合同编号：」",
+      "required": true,
+      "format": "四段式「品牌码-类型码-年份-序号」，如 DM-JX-2026-001；可带扩展段（DM-JX-JS-2026-001）；仅大写字母、数字、半角连字符；未定可填「待定」",
+      "example": "DM-JX-2026-001",
+      "target": {
+        "kind": "para",
+        "index": 13,
+        "anchor": "主合同编号：",
+        "occurrence": 1
+      },
+      "mode": "append",
+      "render": "{v}",
+      "vtype": "contract_no"
+    },
+    {
+      "id": "JX-02",
+      "label": "乙方公司全称",
+      "where": "首页「经销商：＿＿＿＿（以下简称乙方）」",
+      "required": true,
+      "format": "与营业执照完全一致的全称，含括号须用中文全角括号",
+      "example": "示例经销商有限公司",
+      "target": {
+        "kind": "para",
+        "index": 26,
+        "anchor": "（以下简称乙方）",
+        "occurrence": 1
+      },
+      "mode": "regex",
+      "pattern": "＿{3,}",
+      "render": "{v}",
+      "vtype": "company"
+    },
+    {
+      "id": "JX-03",
+      "label": "乙方统一社会信用代码",
+      "where": "首页乙方信息栏",
+      "required": true,
+      "format": "18 位，大写字母+数字；须通过 GB32100 校验位",
+      "example": "91440100MA5C000005",
+      "target": {
+        "kind": "para",
+        "index": 27,
+        "anchor": "统一社会信用代码：",
+        "occurrence": 2
+      },
+      "mode": "append",
+      "render": "{v}",
+      "vtype": "uscc"
+    },
+    {
+      "id": "JX-04",
+      "label": "乙方联系人",
+      "where": "首页乙方信息栏",
+      "required": true,
+      "format": "姓名，2-15 字",
+      "example": "张三",
+      "target": {
+        "kind": "para",
+        "index": 28,
+        "anchor": "联系人：",
+        "occurrence": 2
+      },
+      "mode": "append",
+      "render": "{v}",
+      "vtype": "person"
+    },
+    {
+      "id": "JX-05",
+      "label": "乙方通讯地址",
+      "where": "首页乙方信息栏",
+      "required": true,
+      "format": "省+市+区+详细地址，须含门牌号",
+      "example": "示例市示例区XX路XX号XX室",
+      "target": {
+        "kind": "para",
+        "index": 29,
+        "anchor": "通讯地址：",
+        "occurrence": 2
+      },
+      "mode": "append",
+      "render": "{v}",
+      "vtype": "address"
+    },
+    {
+      "id": "JX-06",
+      "label": "经销区域-省",
+      "where": "第一条第 1 款",
+      "required": true,
+      "format": "省级行政区名称，不带「省」字（模板已含）",
+      "example": "示例省",
+      "target": {
+        "kind": "para",
+        "index": 35,
+        "anchor": "甲方授权乙方为",
+        "occurrence": 1
+      },
+      "mode": "regex",
+      "pattern": "＿+省",
+      "render": "{v}省",
+      "vtype": "region"
+    },
+    {
+      "id": "JX-07",
+      "label": "经销区域-市",
+      "where": "第一条第 1 款",
+      "required": true,
+      "format": "地级市名称，不带「市」字（模板已含）",
+      "example": "示例市",
+      "target": {
+        "kind": "para",
+        "index": 35,
+        "anchor": "甲方授权乙方为",
+        "occurrence": 1
+      },
+      "mode": "regex",
+      "pattern": "＿+市",
+      "render": "{v}市",
+      "vtype": "region"
+    },
+    {
+      "id": "JX-08",
+      "label": "经销区域-系统/渠道",
+      "where": "第一条第 1 款",
+      "required": true,
+      "format": "授权渠道或系统名称，模板自动补「系统经销商」",
+      "example": "示例渠道专营店",
+      "target": {
+        "kind": "para",
+        "index": 35,
+        "anchor": "甲方授权乙方为",
+        "occurrence": 1
+      },
+      "mode": "regex",
+      "pattern": "＿{2,}(?:\\s+＿)?\\s*系统经销商",
+      "render": "{v}系统经销商",
+      "vtype": "channel"
+    },
+    {
+      "id": "JX-09",
+      "label": "合同期限-起始日",
+      "where": "第一条第 2 款「自　年　月　日」",
+      "required": true,
+      "format": "YYYY-MM-DD；须早于终止日",
+      "example": "2026-11-01",
+      "target": {
+        "kind": "para",
+        "index": 36,
+        "anchor": "2.合同期限：",
+        "occurrence": 1
+      },
+      "mode": "regex",
+      "pattern": "自\\s+年\\s+月\\s+日",
+      "render": "自 {y} 年 {m} 月 {d} 日",
+      "vtype": "date"
+    },
+    {
+      "id": "JX-10",
+      "label": "合同期限-终止日",
+      "where": "第一条第 2 款「至　年　月　日止」",
+      "required": true,
+      "format": "YYYY-MM-DD；须晚于起始日",
+      "example": "2027-10-31",
+      "target": {
+        "kind": "para",
+        "index": 36,
+        "anchor": "2.合同期限：",
+        "occurrence": 1
+      },
+      "mode": "regex",
+      "pattern": "至\\s+年\\s+月\\s+日止",
+      "render": "至 {y} 年 {m} 月 {d} 日止",
+      "vtype": "date"
+    },
+    {
+      "id": "JX-11",
+      "label": "履约保证金-大写",
+      "where": "第二条第 1 款",
+      "required": false,
+      "format": "中文大写金额，须与小写一致；模板默认「壹万元」",
+      "example": "壹万元",
+      "default": "壹万元",
+      "target": {
+        "kind": "para",
+        "index": 47,
+        "anchor": "履约保证金标准：",
+        "occurrence": 1
+      },
+      "mode": "regex",
+      "pattern": "（大写）(.+?)（",
+      "render": "（大写）{v}（",
+      "vtype": "amount_cn"
+    },
+    {
+      "id": "JX-12",
+      "label": "履约保证金-小写",
+      "where": "第二条第 1 款",
+      "required": false,
+      "format": "阿拉伯数字整数，须与大写一致；模板默认 10000",
+      "example": "10000",
+      "default": "10000",
+      "target": {
+        "kind": "para",
+        "index": 47,
+        "anchor": "履约保证金标准：",
+        "occurrence": 1
+      },
+      "mode": "regex",
+      "pattern": "￥\\s*[\\d,]+\\s*元",
+      "render": "￥ {v} 元",
+      "vtype": "amount_num"
+    },
+    {
+      "id": "JX-13",
+      "label": "对账联系人",
+      "where": "第五条第 2 款「1)联系人：」",
+      "required": true,
+      "format": "姓名，2-15 字；可与乙方联系人相同",
+      "example": "李四",
+      "target": {
+        "kind": "para",
+        "index": 75,
+        "anchor": "1)联系人：",
+        "occurrence": 1
+      },
+      "mode": "append",
+      "render": "{v}",
+      "vtype": "person"
+    },
+    {
+      "id": "JX-14",
+      "label": "对账联系电话",
+      "where": "第五条第 2 款「2)联系电话：」",
+      "required": true,
+      "format": "手机 11 位或座机含区号",
+      "example": "13800138000",
+      "target": {
+        "kind": "para",
+        "index": 76,
+        "anchor": "2)联系电话：",
+        "occurrence": 1
+      },
+      "mode": "append",
+      "render": "{v}",
+      "vtype": "phone"
+    },
+    {
+      "id": "JX-15",
+      "label": "收货地址",
+      "where": "第六条第 4 款「(1) 地址：」",
+      "required": true,
+      "format": "仓库/收货地点详细地址",
+      "example": "示例市示例区XX路XX号XX仓库",
+      "target": {
+        "kind": "para",
+        "index": 86,
+        "anchor": "(1) 地址：",
+        "occurrence": 1
+      },
+      "mode": "append",
+      "render": "{v}",
+      "vtype": "address"
+    },
+    {
+      "id": "JX-16",
+      "label": "收货联系人",
+      "where": "第六条第 4 款「(2) 联系人：」",
+      "required": true,
+      "format": "姓名，2-15 字",
+      "example": "王五",
+      "target": {
+        "kind": "para",
+        "index": 87,
+        "anchor": "(2) 联系人：",
+        "occurrence": 1
+      },
+      "mode": "append",
+      "render": "{v}",
+      "vtype": "person"
+    },
+    {
+      "id": "JX-17",
+      "label": "收货联系电话",
+      "where": "第六条第 4 款「(3) 联系电话：」",
+      "required": true,
+      "format": "手机 11 位或座机含区号",
+      "example": "13900139000",
+      "target": {
+        "kind": "para",
+        "index": 88,
+        "anchor": "(3) 联系电话：",
+        "occurrence": 1
+      },
+      "mode": "append",
+      "render": "{v}",
+      "vtype": "phone"
+    },
+    {
+      "id": "JX-18",
+      "label": "季度返利",
+      "where": "第七条第 1 款（4）「季度返利：＿＿＿%」",
+      "required": true,
+      "format": "百分数数值，0-30 之间，可含一位小数；填 0 表示无返利",
+      "example": "3",
+      "target": {
+        "kind": "para",
+        "index": 106,
+        "anchor": "季度返利：",
+        "occurrence": 1
+      },
+      "mode": "regex",
+      "pattern": "季度返利：＿+\\s*%",
+      "render": "季度返利：{v}%",
+      "vtype": "percent_rebate"
+    },
+    {
+      "id": "JX-19",
+      "label": "年度返利",
+      "where": "第七条第 1 款（4）「年度返利：＿＿＿%」",
+      "required": true,
+      "format": "百分数数值，0-30 之间，可含一位小数；通常不低于季度返利",
+      "example": "2",
+      "target": {
+        "kind": "para",
+        "index": 107,
+        "anchor": "年度返利：",
+        "occurrence": 1
+      },
+      "mode": "regex",
+      "pattern": "年度返利：＿+\\s*%",
+      "render": "年度返利：{v}%",
+      "vtype": "percent_rebate"
+    },
+    {
+      "id": "JX-20",
+      "label": "签订时间",
+      "where": "签章页「签订时间：　年　月　日」",
+      "required": true,
+      "format": "YYYY-MM-DD；须落在合同期限起始日之前或当日",
+      "example": "2026-10-20",
+      "target": {
+        "kind": "para",
+        "index": 258,
+        "anchor": "签订时间：",
+        "occurrence": 1
+      },
+      "mode": "regex",
+      "pattern": "签订时间：\\s*年\\s*月\\s*日",
+      "render": "签订时间：{y} 年 {m} 月 {d} 日",
+      "vtype": "date"
+    }
+  ],
+  "grids": [
+    {
+      "id": "JX-G1",
+      "label": "年度销售出货目标",
+      "where": "第七条第 1 款（1）目标表",
+      "table": 0,
+      "required": true,
+      "unit": "万元",
+      "rows": {
+        "quarter": 2,
+        "month": 4
+      },
+      "quarter_cols": [
+        0,
+        3,
+        6,
+        9
+      ],
+      "month_cols": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11
+      ],
+      "note": "第 3 行为每季合并格（季度目标值），第 5 行为 1-12 月分解值；两行任填其一或都填，不自动拆分。",
+      "vtype": "grid"
+    },
+    {
+      "id": "JX-G2",
+      "label": "销售目标达成最低浮动基准",
+      "where": "第七条第 1 款（2）基准表",
+      "table": 1,
+      "required": true,
+      "unit": "万元",
+      "rows": {
+        "quarter": 2,
+        "month": 4
+      },
+      "quarter_cols": [
+        0,
+        3,
+        6,
+        9
+      ],
+      "month_cols": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11
+      ],
+      "note": "结构与目标表一致；通常填写各季/各月的最低达成值（下限）。",
+      "vtype": "grid"
+    }
+  ],
+  "cells": [
+    {
+      "id": "JX-C1",
+      "label": "终端网点建设目标-第一季度",
+      "where": "第七条第 1 款（3）网点表 第 1 行",
+      "table": 2,
+      "row": 0,
+      "col": 0,
+      "required": true,
+      "format": "非负整数，单位「家」",
+      "example": "5",
+      "mode": "regex",
+      "pattern": "＿{2,}",
+      "render": "{v}",
+      "vtype": "int"
+    },
+    {
+      "id": "JX-C2",
+      "label": "终端网点建设目标-第二季度",
+      "where": "第七条第 1 款（3）网点表 第 2 行",
+      "table": 2,
+      "row": 1,
+      "col": 0,
+      "required": true,
+      "format": "非负整数，单位「家」",
+      "example": "5",
+      "mode": "regex",
+      "pattern": "＿{2,}",
+      "render": "{v}",
+      "vtype": "int"
+    },
+    {
+      "id": "JX-C3",
+      "label": "终端网点建设目标-第三季度",
+      "where": "第七条第 1 款（3）网点表 第 3 行",
+      "table": 2,
+      "row": 2,
+      "col": 0,
+      "required": true,
+      "format": "非负整数，单位「家」",
+      "example": "6",
+      "mode": "regex",
+      "pattern": "＿{2,}",
+      "render": "{v}",
+      "vtype": "int"
+    },
+    {
+      "id": "JX-C4",
+      "label": "终端网点建设目标-第四季度",
+      "where": "第七条第 1 款（3）网点表 第 4 行",
+      "table": 2,
+      "row": 3,
+      "col": 0,
+      "required": true,
+      "format": "非负整数，单位「家」",
+      "example": "6",
+      "mode": "regex",
+      "pattern": "＿{2,}",
+      "render": "{v}",
+      "vtype": "int"
+    },
+    {
+      "id": "JX-C5",
+      "label": "乙方签章页-法定代表人",
+      "where": "签章页右列表格「法定代表人:」",
+      "table": 3,
+      "row": 1,
+      "col": 1,
+      "required": false,
+      "format": "姓名，2-15 字；也可线下手签留空",
+      "example": "张三",
+      "mode": "append",
+      "render": "{v}",
+      "anchor": "法定代表人:",
+      "vtype": "person"
+    },
+    {
+      "id": "JX-C6",
+      "label": "乙方签章页-委托代理人",
+      "where": "签章页右列表格「委托代理人（签字）:」",
+      "table": 3,
+      "row": 2,
+      "col": 1,
+      "required": false,
+      "format": "姓名，2-15 字；也可线下手签留空",
+      "example": "李四",
+      "mode": "append",
+      "render": "{v}",
+      "anchor": "委托代理人（签字） :",
+      "vtype": "person"
+    },
+    {
+      "id": "JX-C7",
+      "label": "乙方签章页-地址",
+      "where": "签章页右列表格「地址：」",
+      "table": 3,
+      "row": 3,
+      "col": 1,
+      "required": false,
+      "format": "与首页通讯地址一致",
+      "example": "示例市示例区XX路XX号XX室",
+      "mode": "append",
+      "render": "{v}",
+      "anchor": "地址：",
+      "vtype": "address"
+    }
+  ],
+  "readonly_check": [
+    {
+      "label": "甲方名称",
+      "text": "示例品牌方有限公司"
+    },
+    {
+      "label": "甲方统一社会信用代码",
+      "text": "91310000MA1FL0000N"
+    },
+    {
+      "label": "甲方收款账号",
+      "text": "44000000000000000"
+    },
+    {
+      "label": "甲方开户行",
+      "text": "示例银行股份有限公司示例支行"
+    }
+  ]
+}

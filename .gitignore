@@ -1,0 +1,33 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Generated output
+out/
+output/
+.archify/
+*.log
+
+# Business files: never commit real customer data
+*.xlsx
+*.xls
+*.docx
+*.doc
+*.pdf
+*.csv
+values.json
+*_主档*
+*对账*
+*政策表*
+~$*
+
+# Keep the fictional customer-master template
+!skills/dealer-ops-suite/assets/客户主档-模板.xlsx

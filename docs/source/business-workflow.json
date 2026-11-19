@@ -1,0 +1,281 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "经销商业务全流程",
+    "locale": "zh-CN",
+    "output": "dealer-ops-suite-business-workflow.html",
+    "quality_profile": "showcase"
+  },
+  "lanes": [
+    {
+      "id": "biz",
+      "label": "商务谈判"
+    },
+    {
+      "id": "customer",
+      "label": "客户"
+    },
+    {
+      "id": "contract",
+      "label": "合同与填报"
+    },
+    {
+      "id": "handoff",
+      "label": "订单与发货（Skill 外）",
+      "variant": "exception"
+    },
+    {
+      "id": "ledger",
+      "label": "台账与自动化"
+    },
+    {
+      "id": "recon",
+      "label": "财务对账"
+    }
+  ],
+  "phases": [
+    {
+      "id": "negotiate",
+      "label": "商务前置",
+      "fromCol": 0,
+      "toCol": 1
+    },
+    {
+      "id": "agreement",
+      "label": "合同与资料",
+      "fromCol": 2,
+      "toCol": 3,
+      "variant": "emphasis"
+    },
+    {
+      "id": "fulfill",
+      "label": "履约与客户管理",
+      "fromCol": 4,
+      "toCol": 5,
+      "variant": "dashed"
+    }
+  ],
+  "groups": [
+    {
+      "id": "contract_pack",
+      "label": "合同包",
+      "lane": "contract",
+      "fromCol": 2,
+      "toCol": 3,
+      "variant": "emphasis"
+    },
+    {
+      "id": "outside_skill",
+      "label": "Skill 外交接",
+      "lane": "handoff",
+      "fromCol": 4,
+      "toCol": 4,
+      "variant": "dashed"
+    },
+    {
+      "id": "ledger_driven",
+      "label": "台账驱动",
+      "lane": "ledger",
+      "fromCol": 5,
+      "toCol": 5,
+      "variant": "emphasis"
+    }
+  ],
+  "mainPath": [
+    "talk",
+    "policy",
+    "contract",
+    "sign",
+    "ship",
+    "sell",
+    "ledger",
+    "todo",
+    "recon"
+  ],
+  "nodes": [
+    {
+      "id": "talk",
+      "lane": "biz",
+      "col": 0,
+      "type": "external",
+      "label": "谈客户",
+      "sublabel": "确定合作意向"
+    },
+    {
+      "id": "policy",
+      "lane": "biz",
+      "col": 1,
+      "type": "backend",
+      "label": "定政策",
+      "sublabel": "具体政策条款"
+    },
+    {
+      "id": "contract",
+      "lane": "contract",
+      "col": 2,
+      "type": "backend",
+      "label": "走合同",
+      "sublabel": "主合同/补充协议/政策文件"
+    },
+    {
+      "id": "info",
+      "lane": "customer",
+      "col": 2,
+      "type": "external",
+      "label": "提供资料",
+      "sublabel": "主体/开票/对账人/收件"
+    },
+    {
+      "id": "sign",
+      "lane": "contract",
+      "col": 3,
+      "type": "security",
+      "label": "签署生效",
+      "sublabel": "合同与附件定稿"
+    },
+    {
+      "id": "ship",
+      "lane": "handoff",
+      "col": 4,
+      "type": "messagebus",
+      "label": "订单与发货",
+      "sublabel": "不在本 Skill 范围内",
+      "tag": "Skill 外"
+    },
+    {
+      "id": "sell",
+      "lane": "customer",
+      "col": 4,
+      "type": "external",
+      "label": "收货并销售",
+      "sublabel": "客户开始动销"
+    },
+    {
+      "id": "ledger",
+      "lane": "ledger",
+      "col": 5,
+      "type": "database",
+      "label": "建台账",
+      "sublabel": "记录签约时收集的信息"
+    },
+    {
+      "id": "todo",
+      "lane": "ledger",
+      "col": 5,
+      "type": "messagebus",
+      "label": "生成待办",
+      "sublabel": "引用 Skill 自动触发",
+      "yOffset": 96
+    },
+    {
+      "id": "recon",
+      "lane": "recon",
+      "col": 5,
+      "type": "backend",
+      "label": "对账工作",
+      "sublabel": "进入待办节点后执行",
+      "tag": "B 段全流程"
+    }
+  ],
+  "edges": [
+    {
+      "id": "talk-policy",
+      "from": "talk",
+      "to": "policy",
+      "label": "谈定",
+      "variant": "emphasis",
+      "role": "main"
+    },
+    {
+      "id": "policy-contract",
+      "from": "policy",
+      "to": "contract",
+      "label": "定条款",
+      "variant": "emphasis",
+      "role": "main"
+    },
+    {
+      "id": "info-contract",
+      "from": "info",
+      "to": "contract",
+      "label": "资料入主合同",
+      "variant": "dashed",
+      "role": "branch"
+    },
+    {
+      "id": "contract-sign",
+      "from": "contract",
+      "to": "sign",
+      "label": "走合同",
+      "variant": "emphasis",
+      "role": "main"
+    },
+    {
+      "id": "sign-ship",
+      "from": "sign",
+      "to": "ship",
+      "label": "签署后",
+      "variant": "default",
+      "role": "main"
+    },
+    {
+      "id": "ship-sell",
+      "from": "ship",
+      "to": "sell",
+      "label": "发货",
+      "variant": "default",
+      "role": "main"
+    },
+    {
+      "id": "sell-ledger",
+      "from": "sell",
+      "to": "ledger",
+      "label": "进入客户管理",
+      "variant": "emphasis",
+      "role": "main"
+    },
+    {
+      "id": "ledger-todo",
+      "from": "ledger",
+      "to": "todo",
+      "label": "台账引用",
+      "variant": "emphasis",
+      "role": "main"
+    },
+    {
+      "id": "todo-recon",
+      "from": "todo",
+      "to": "recon",
+      "label": "进入待办",
+      "variant": "emphasis",
+      "role": "main"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "范围边界",
+      "items": [
+        "订单与发货不进入 Skill，图中只作为交接节点",
+        "客户收货并开始销售后，才进入客户管理与对账"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "对账能力",
+      "items": [
+        "进入待办节点后调用 dealer-ops-suite 的 B 段",
+        "原 对账工作流 工作流完整保留"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "自动化",
+      "items": [
+        "月度提醒每月 1 日 09:00 触发",
+        "本期无逾期也发送无需处理提示"
+      ]
+    }
+  ]
+}

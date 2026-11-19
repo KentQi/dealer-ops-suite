@@ -1,0 +1,8 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "dealer-ops-suite",
+  "version": "1.0.0",
+  "description": "经销商全生命周期工作套件：填合同、建客户档、月度对账、出对账单、政策表自洽检查、台账待办查询。",
+  "license": "MIT",
+  "keywords": ["经销商", "对账", "合同", "铺货代销", "台账"]
+}

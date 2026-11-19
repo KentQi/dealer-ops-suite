@@ -1,0 +1,41 @@
+{
+  "doc_key": "FC",
+  "title": "附件一《线下经销商防窜货管理规定》",
+  "version": "1.0.0",
+  "fields": [],
+  "grids": [],
+  "cells": [
+    {
+      "id": "FC-C1",
+      "label": "附件签署日期-甲方",
+      "where": "签署页左列「日期：　年　月　日」",
+      "table": 2,
+      "row": 2,
+      "col": 0,
+      "required": true,
+      "format": "YYYY-MM-DD；默认取主合同签订时间（须显式传入，不自动推断）",
+      "example": "2026-10-20",
+      "mode": "regex",
+      "pattern": "日期：\\s*年\\s*月\\s*日",
+      "render": "日期：{y} 年 {m} 月 {d} 日",
+      "vtype": "date"
+    },
+    {
+      "id": "FC-C2",
+      "label": "附件签署日期-乙方",
+      "where": "签署页右列「日期：　年　月　日」",
+      "table": 2,
+      "row": 2,
+      "col": 1,
+      "required": true,
+      "format": "YYYY-MM-DD；默认取主合同签订时间（须显式传入，不自动推断）",
+      "example": "2026-10-20",
+      "mode": "regex",
+      "pattern": "日期：\\s*年\\s*月\\s*日",
+      "render": "日期：{y} 年 {m} 月 {d} 日",
+      "vtype": "date"
+    }
+  ],
+  "locked_content": [],
+  "readonly_check": []
+}
