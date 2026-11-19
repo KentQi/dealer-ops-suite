@@ -61,6 +61,7 @@ metadata:
   - 结构化提问 / 确认卡片：有且离散决策 ≤ 4 项 → 可用；否则在回复中逐项提问。合同字段确认默认走 HTML 确认页，**不依赖** harness 交互能力。
   - **确认单去向**：确认页提交后，确认单通常在浏览器下载目录（用户点过「存到客户目录」时在客户目录）；助手用 `locate_confirm.py` 自动定位（阶段 A3.5），**不要让用户搬文件**，也不要向普通用户解释文件格式。
   - 本地文件读写：有读取能力 → 直接读；否则让用户提供路径或上传附件。
+  - Office 写入：优先使用当前 harness 的无损编辑通道（如 `editor_sdk` / `doc_*`）；没有则明确说明能力边界，不用 python-docx 强改。
   - LLM 语义复核：由**当前 harness 的模型**执行，脚本不调用任何外部模型；harness 无文件写权限时，至少输出复核报告 JSON 由用户归档（详见 [references/复核协议.md](references/复核协议.md)）。
   - 网络：脚本不联网；除首次 pip 安装依赖外无需网络。
 
@@ -688,7 +689,7 @@ python3 edsdk.py call close_file file_id=<file_id>               # ② 关掉脏
 ③ 重新 `present_files` 打开展示，再 `get_pool_status` 取**新的** file_id。
 `file_id` 每轮都会变，切勿沿用上一轮的 ID。
 
-editor_sdk 目录：`/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/resources/plugins/workbuddy-builtin/skills/workbuddy-local-office-edit`。写入通道必须走它（`workbuddy-local-office-edit` 的 `doc_*` 工具），不要用 python-docx 直接改文件。
+Office 写入通道：若当前 harness 提供 `editor_sdk` / `doc_*` 一类的无损编辑能力，必须走它；没有这类能力时，明确告知用户当前 harness 无法保证格式无损，不要用 python-docx 直接改文件。
 
 #### 步骤 5 · 验收（不通过不得交付）
 

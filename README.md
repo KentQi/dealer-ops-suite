@@ -19,13 +19,27 @@ Dealer Ops Suite 把这些问题收进两条完整工作流：**填合同**与**
 
 | 模块 | 做什么 | 主要入口 |
 |---|---|---|
-| 合同填充 | 识别经销 / 铺货代销合同及附件待填项，一次性收值、校验、编译计划、写入、验收 | `skills/dealer-ops-suite/scripts/scan_blanks.py`、`build_plan.py`、`apply_fill.py`、`verify_fill.py` |
+| 合同填充与条款校验 | 识别经销 / 铺货代销合同及附件待填项，一次性收值、关键条款校验、编译计划、写入、验收 | `scan_blanks.py`、`build_plan.py`、`apply_fill.py`、`verify_fill.py` |
 | 客户主档 | 从合同抽取候选字段，生成确认页，人工逐项确认后写入客户主档 | `extract_contract.py`、`make_confirm_html.py`、`apply_contract.py` |
 | 月度对账 | 主档转配置，计算应结算、差异、贴花，生成对账工作簿 | `load_master.py`、`recon_engine.py` |
 | 复核与交付 | L1–L5 确定性校验 + L6 LLM 语义复核，复核锁绑定工作簿哈希 | `make_review_packet.py`、`apply_review.py`、`check_public_copy.py`、`export_pdf.py` |
 | 政策表自检 | 只做三类原则性检查：同条码多行、行内与表尾门槛冲突、条码缺失或非法 | `check_policy.py` |
 | 台账待办 | 按台账公式计算当前应做、距截止、紧急度；公式无缓存时即时重算并标注 | `ledger_read.py` |
 | 台账回写 | 对账交付后把期初 / 结算 / 差异 / 贴花 / 状态写回主档「期间」表；dry-run、自动备份、同期间幂等 | `writeback_ledger.py` |
+
+### 合同关键条款校验（填写阶段）
+
+`build_plan.py` 与 `verify_fill.py` 会在写入前后检查：
+
+- 合同编号格式、类型码、年份与签订时间一致性；
+- 合同起止、签订时间、附件签署日期；
+- 履约保证金大小写是否成对、是否一致；
+- 季度/年度返利区间，以及年度返利是否明显高于季度；
+- 季度/月度销售目标是否至少给出一档、分解合计是否提示复核；
+- 主体名称、税号、联系人、地址、电话格式；
+- 模板漂移、空白未填、锁定条款表被改、落笔值与确认值不一致。
+
+这些是**确定性校验**，解决“填错/漏填/前后矛盾”。条款语义风险（单方义务、定义缺失、罚则不可执行、自动续约/解除冲突）不在脚本内，需由 LLM 审阅并逐条让用户确认；目前这部分还没有独立模块。
 
 ## 两张图
 
@@ -76,11 +90,14 @@ Dealer Ops Suite 把这些问题收进两条完整工作流：**填合同**与**
 
 ## 快速开始
 
+> Skill 指令本身不绑定某个 harness。下面以 WorkBuddy 的目录为例；换到其他 harness 时，只需把 `skills/dealer-ops-suite` 放进它的 skills 目录。Office 写入若没有无损编辑通道，Skill 会明确提示能力边界，不会用 python-docx 强改。
+
 ### 方式一：作为 Agent Plugin
 
 ```bash
 git clone https://github.com/KentQi/dealer-ops-suite.git \
-  ~/.workbuddy/plugins/dealer-ops-suite
+  "<你的 harness 插件目录>/dealer-ops-suite"
+# WorkBuddy 示例：~/.workbuddy/plugins/dealer-ops-suite
 ```
 
 重启会话后，在对话里说「用 dealer-ops-suite 帮我识别这份合同」或「用 dealer-ops-suite 做 2026-10 对账」即可。
@@ -89,7 +106,9 @@ git clone https://github.com/KentQi/dealer-ops-suite.git \
 
 ```bash
 git clone https://github.com/KentQi/dealer-ops-suite.git /tmp/dealer-ops-suite
-cp -R /tmp/dealer-ops-suite/skills/dealer-ops-suite ~/.workbuddy/skills/dealer-ops-suite
+cp -R /tmp/dealer-ops-suite/skills/dealer-ops-suite \
+  "<你的 harness skills 目录>/dealer-ops-suite"
+# WorkBuddy 示例：~/.workbuddy/skills/dealer-ops-suite
 ```
 
 ### 依赖

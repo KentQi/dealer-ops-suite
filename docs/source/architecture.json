@@ -25,7 +25,7 @@
     {
       "id": "agent",
       "type": "frontend",
-      "label": "WorkBuddy Agent",
+      "label": "Agent Harness",
       "sublabel": "会话入口",
       "pos": [
         220,
@@ -83,8 +83,8 @@
     {
       "id": "contract",
       "type": "backend",
-      "label": "合同填写",
-      "sublabel": "C 段 · 主合同与附件",
+      "label": "合同填写与校验",
+      "sublabel": "C 段 · 填 + 关键条款自检",
       "pos": [
         680,
         110
@@ -182,7 +182,7 @@
   "boundaries": [
     {
       "kind": "region",
-      "label": "WorkBuddy 运行时",
+      "label": "Agent 运行时",
       "wraps": [
         "agent",
         "automation"
@@ -290,7 +290,8 @@
       "title": "范围",
       "items": [
         "订单与发货不进入本 Skill，按业务约定停在合同后",
-        "对账阶段完整保留原 对账工作流 工作流"
+        "对账阶段完整保留原对账工作流",
+        "不绑定特定 harness；任意 Agent 运行时均可加载"
       ]
     },
     {
@@ -298,7 +299,8 @@
       "title": "检查边界",
       "items": [
         "政策表只做三类原则性自检：重复条码、门槛冲突、条码非法",
-        "输出统一为「需确认项」，不直接判错"
+        "输出统一为「需确认项」，不直接判错",
+        "合同填写校验：日期 / 金额 / 比例 / 目标 / 返利 / 保证金 / 附件一致性"
       ]
     },
     {
@@ -306,7 +308,8 @@
       "title": "运行时说明",
       "items": [
         "台账公式无缓存时，ledger_read.py 按 Excel 规则即时计算并标注",
-        "政策自检输出为会话需确认项，台账待办输出为会话消息"
+        "政策自检输出为会话需确认项，台账待办输出为会话消息",
+        "B5 台账回写由 writeback_ledger.py 执行（dry-run → --write）"
       ]
     }
   ]
