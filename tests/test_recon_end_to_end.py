@@ -256,6 +256,10 @@ class ConsignmentWorkbookTest(unittest.TestCase):
                 self.assertEqual(json.load(fh), result["rule_result"])
             self.assertEqual(rule_ref["sha256"],
                              __import__("hashlib").sha256(sidecar.read_bytes()).hexdigest())
+            # issue #6 防回填钉死：rule_result 逐笔内容不得回流包内，体积收敛不被悄悄撤销
+            packet_text = json.dumps(packet)
+            self.assertNotIn("quantity_reconciliation", packet_text)
+            self.assertNotIn("priced_lines", packet_text)
             wb = openpyxl.load_workbook(self.out)
             wb["00-对账说明"]["A1"] = str(wb["00-对账说明"]["A1"].value) + "（附表已保存）"
             wb.save(self.out)
