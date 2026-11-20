@@ -1,5 +1,10 @@
 # 会话日志(最新在上)
 
+## 2026-11-21 00:37 | model=zcode-glm-5.3-flash | task=T005 完成
+- 摘要: T005 完成：koujing_sha256 复核链路绑定落地（8225a58）。出账凭证新增口径绑定 {path, config_sha256}（铺货必有——load_master 强制问卡；月结显式 null）；make_review_packet 原样透传；apply_review --apply 写入复核锁、--check 交付前重算口径文件哈希比对，漂移即拒绝（旧格式包/锁按缺席跳过，兼容历史归档）；协议文档 §6.3 改为两道防线实现态。新增 2 个篡改测试钉住两个拒绝窗口（出账后改口径→复核包生成拒绝；复核后改口径→交付校验拒绝），155 tests OK，compileall 过，gitleaks 唯一命中为 relay 认领锁运行态（已确认被 ignore，非仓库内容）。
+- 事实(v2): mode=single | 文件 0 | ± +0/-0 | base=- | sha=- | branch=main || 验收: 未要求 | verify: PASS 12·WARN 0·ERROR 0 | 耗时: 0s
+- 留给下一个: 全仓库实质遗留已清零（审计 41 项、结构性收敛 6 条、复核 F/D/C/E、文档漂移、koujing_sha256 全部闭环）；后续工作由用户指定
+
 ## 2026-11-21 00:26 | model=zcode-glm-5.3-flash | task=T004 完成
 - 摘要: T004 完成：koujing_sha256 落地裁决（用户选定「落地实现」）。事实核查确认：口径哈希仅载入时校验，「出账后复核前」改 _口径确认.json 无门禁变红； koujing.py docstring（宣称进复核锁）与协议文档（PR #8 改为如实声明）自相矛盾。裁决落 DECISIONS（现行），SPEC §4 开放问题销项，实现任务 T005 挂待办。
 - 事实(v2): mode=single | 文件 2 | ± +7/-1 | base=- | sha=- | branch=main || 验收: 未要求 | verify: PASS 12·WARN 0·ERROR 0 | 耗时: 0s
