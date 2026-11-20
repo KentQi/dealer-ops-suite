@@ -23,7 +23,8 @@
     "GEMINI.md",
     "LICENSE",
     "plugin.json",
-    "skills"
+    "skills",
+    "requirements.txt"
   ],
   "docsPhases": [
     "source"
