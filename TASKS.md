@@ -18,11 +18,24 @@ executionRoot 是独立检出(node_modules 等依赖需单独安装)。任务分
 (空——认领后由 relay_claim 移入;认领锁在 .relay/claims/,TTL 4 小时,崩溃会话的认领到期自动可接管)
 
 ## 待办
+- [ ] T012 锁定表显式披露、文档收口与L6术语退役
+  验收: verify_fill 在 locked_content 为空时输出「未登记」披露；validation-rules/field-map/合同编辑 三处宣称收口；完成 L6 术语彻底退役（README 2 处 + 口径确认协议 2 处 + 复核协议 2 处 + 对外文案治理 2 处）；pytest 全绿
+  备注: T008 还应顺带处理：复核协议.md 标题、对外文案治理.md §7 标题的 L6 措辞；deps 恢复已过（4c75605 + aba2d6e）
+- [ ] T008 锁定表静默no-op显式披露与文档收口（恢复批次2）
+  验收: verify_fill 在 locked_content 为空时输出「未登记」披露文案；validation-rules/field-map/合同编辑 三处宣称收口；pytest 全绿
+- [ ] T009 迁移对抗测试层与六类回归钉子（恢复批次3）
+  验收: fill_sim/fixtures/test_attacks/test_workflow 迁入（真实放行凭证夹具、品牌scrub）；test_public_copy_gate/test_v17_gates/test_deterministic_rerun/铺货侧映射测试新增；pytest 全绿且存量 unittest 不回归
+- [ ] T010 最小CI建立（恢复批次4）
+  验收: .relay 白名单含 .github；tools/validate.py 迁入（.claude-plugin 降级可选）；.github/workflows/ci.yml 存在（pytest统一、SHA钉、单版本、gitleaks）；GitHub Actions 首绿
+- [ ] T011 出账流水线强制禁词扫描（新运行时行为）
+  验收: apply_v17 附表保存后自动跑 check_public_copy，违禁词退出1并报「对外文案门禁未通过」；e2e 负路径测试覆盖；DECISIONS 落条目
 - [ ] T006 待用户指定后续方向
   验收: 无需强制验收；若用户要求可按 SPEC AC1–AC4 全量巡检
   备注: 全仓库实质遗留已清零（审计 41 项、结构性收敛 6 条、复核 F/D/C/E、文档漂移、koujing_sha256 全部闭环）；后续工作由用户指定
 
 ## 已完成
+- [x] T007 恢复依赖声明与requirements（恢复批次1）  (2026-11-21)
+  验收: SKILL.md frontmatter 与 README 依赖声明含 python-docx/lxml；根目录 requirements.txt 存在且 pip install -r 可解；pytest tests -q 全绿
 - [x] T005 实现 koujing_sha256 复核链路绑定  (2026-11-21)
   验收: SPEC AC1–AC4 全绿（153+ tests）；篡改场景测试：出账后改 _口径确认.json → apply_review --check 拒绝并给中文报错；口径确认协议.md §6.3 与 koujing.py docstring 收回如实声明改为实现态
   备注: 裁决已落 DECISIONS（2026-11-21 现行）。实现面：两引擎写 koujing_sha256 进 _结算结果.json 凭证 → make_review_packet 携带 → apply_review --check 比对凭证与当前口径文件；k oujing.py docstring 与协议文档同步

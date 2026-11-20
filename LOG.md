@@ -1,5 +1,10 @@
 # 会话日志(最新在上)
 
+## 2026-11-21 01:30 | model=zcode-glm-5.3-flash | task=T007 完成
+- 摘要: T007 完成：恢复合并时丢弃的依赖声明（4c75605）。根目录 requirements.txt 重建（两原仓并集：保留仍正确的 openpyxl<4、删除已过时的 Pillow<12、python-docx 下限抬 1.2.0，注明 CI/开发环境定位）；SKILL.md frontmatter compatibility 补 python-docx/lxml 硬依赖（frontmatter 才是 skill 克隆的真契约）；README 依赖节同步。绿闸 R2 拦截 requirements.txt/.zcode 顶层越界 → 白名单修宪（aba2d6e）+ .zcode 入 ignore。验证：pip --dry-run 解析通过、pytest 155 passed、unittest discover 155 OK 双运行器互不回归。
+- 事实(v2): mode=single | 文件 0 | ± +0/-0 | base=- | sha=- | branch=main || 验收: 未要求 | verify: PASS 12·WARN 0·ERROR 0 | 耗时: 0s
+- 留给下一个: T008 还应顺带处理：复核协议.md 标题、对外文案治理.md §7 标题的 L6 措辞；deps 恢复已过（4c75605 + aba2d6e）
+
 ## 2026-11-21 00:37 | model=zcode-glm-5.3-flash | task=T005 完成
 - 摘要: T005 完成：koujing_sha256 复核链路绑定落地（8225a58）。出账凭证新增口径绑定 {path, config_sha256}（铺货必有——load_master 强制问卡；月结显式 null）；make_review_packet 原样透传；apply_review --apply 写入复核锁、--check 交付前重算口径文件哈希比对，漂移即拒绝（旧格式包/锁按缺席跳过，兼容历史归档）；协议文档 §6.3 改为两道防线实现态。新增 2 个篡改测试钉住两个拒绝窗口（出账后改口径→复核包生成拒绝；复核后改口径→交付校验拒绝），155 tests OK，compileall 过，gitleaks 唯一命中为 relay 认领锁运行态（已确认被 ignore，非仓库内容）。
 - 事实(v2): mode=single | 文件 0 | ± +0/-0 | base=- | sha=- | branch=main || 验收: 未要求 | verify: PASS 12·WARN 0·ERROR 0 | 耗时: 0s
