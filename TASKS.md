@@ -18,11 +18,14 @@ executionRoot 是独立检出(node_modules 等依赖需单独安装)。任务分
 (空——认领后由 relay_claim 移入;认领锁在 .relay/claims/,TTL 4 小时,崩溃会话的认领到期自动可接管)
 
 ## 待办
-- [ ] T003 按需领取后续小任务
-  验收: 候选任务清单见 docs/reviews/ 两份报告的「遗留」节；无强制验收，取任意一条落地并按 SPEC AC1–AC4 判定
-  备注: 仓库现仅剩 main（1f40188），153 tests OK，Pages 与源图一致；relay 协议文件中 BIP 提及均为政策性语境（验收行/日志/决策），非内容回潮
+- [ ] T004 用户裁决 koujing_sha256 是否落地
+  验收: DECISIONS.md 新增 koujing_sha256 裁决条目（落地→另开实现任务按 SPEC AC1–AC4 判定；不做→状态现行并删除 SPEC §4 对应行）
+  备注: SPEC §4 已挂该开放问题及背景（口径确认协议曾承诺、PR #8 时已改为如实声明）；此为用户裁决项，非代码任务
 
 ## 已完成
+- [x] T003 按需领取后续小任务  (2026-11-21)
+  验收: 候选任务清单见 docs/reviews/ 两份报告的「遗留」节；无强制验收，取任意一条落地并按 SPEC AC1–AC4 判定
+  备注: 仓库现仅剩 main（1f40188），153 tests OK，Pages 与源图一致；relay 协议文件中 BIP 提及均为政策性语境（验收行/日志/决策），非内容回潮
 - [x] T002 合并后 Pages 构建确认  (2026-11-21)
   验收: gh api repos/KentQi/dealer-ops-suite/pages/builds/latest -q .status 为 built 后，抽查 docs/architecture.html 与 docs/business-workflow.html 与 docs/source/*.json 一致（grep 关键节点标签），且内容级 BIP 扫描维持零命中
   备注: Pages 由 /docs 构建合并后自动触发；图源为 docs/source/*.json（9160aff 重绘版）

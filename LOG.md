@@ -1,5 +1,12 @@
 # 会话日志(最新在上)
 
+## 2026-11-21 00:23 | model=zcode-glm-5.3-flash | task=T003 完成
+- 摘要: T003 完成：健康扫描确认 docs/index.html 无时效性内容、README 对报告新路径显示正确；修复 .relay/manifest.json 白名单漂移——allowedTopLevel 移除 12 项死条目（两份报告的旧根路径、模板并入的 package.json/.editorconfig/src/scripts/.github、已摘除的 .v2c/user-audit.txt、忽略项 .DS_Store/out/.worktrees），收敛为与仓库现实一致的 17 项；relay_verify 快检 10 PASS/0 ERROR。另将最后一项真实遗留 koujing_sha256（口径确认协议曾承诺未实现）按协议挂入 SPEC §4 开放问题，待用户裁决。
+- 事实(v2): mode=single | 文件 2 | ± +3/-15 | base=- | sha=- | branch=main || 验收: 未要求 | verify: PASS 12·WARN 0·ERROR 0 | 耗时: 0s
+- 负结果: relay_onboard 的 allowedTopLevel 白名单是模板并集，会残留不存在的路径（package.json/.editorconfig/src 等）——接入后应立即收敛到仓库现实
+- 负结果: git ls-files 对含中文名路径默认加引号显示（"docs），按前缀聚合统计时需注意引号
+- 留给下一个: SPEC §4 已挂该开放问题及背景（口径确认协议曾承诺、PR #8 时已改为如实声明）；此为用户裁决项，非代码任务
+
 ## 2026-11-21 00:18 | model=zcode-glm-5.3-flash | task=T002 完成
 - 摘要: T002 完成：PR #9 合并后 Pages 自动构建（commit 1f40188，status=built 无错误）；线上抽查架构图「本地待办」×14 在位且旧内容「月度提醒/843 行」零残留，业务图「回写台账」×5 在位，与 docs/source/*.json 一致；内容级 BIP 扫描内容面（skills/docs/README/plugin）为 0，剩余 5 处命中全部为 relay 协议文件的政策性提及（T002 验收行、会话日志、DECISIONS 决策记录），非红线回归；收尾清理完成（worktree/本地分支/过时远端引用全清，仓库仅剩 main），待推提交已全部推送。
 - 事实(v2): mode=single | 文件 0 | ± +0/-0 | base=- | sha=- | branch=main || 验收: 未要求 | verify: PASS 12·WARN 0·ERROR 0 | 耗时: 0s
