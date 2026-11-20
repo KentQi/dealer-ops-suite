@@ -78,7 +78,36 @@ self.assertNotIn("priced_lines", packet_text)              # rule_result 逐笔�
 - 门禁自测 6/6：复核方两类绕过场景全被拦，两类合法语义全不误伤
 - AST 真实扫描 `scripts/` 全目录：零疑似违例
 
-## 四、遗留
+## 四、第三轮：门禁召回加固（复核 D/C/E，同日）
+
+复核方用自己的绕过代码（非门禁自测片段）重测修复轮门禁：F1 两类原绕过**全拦**（实质修复确认）；新探针发现三处能力盲区，本轮全部收口。
+
+### D【P1 · 已修】金额舍入签名补 `round(Decimal(...), n)` 形态
+
+`round(Decimal(str(v)), 2)` 用 HALF_EVEN，恰好复现 #4 要消除的口径分叉（复核实测：2.665 → 2.66 vs money 2.67；0.345 → 0.34 vs 0.35）。门禁 money 能力新增该形态（覆盖 `from decimal import Decimal` 与 `decimal.Decimal` 两种写法），植入自测钉死。
+如实声明的边界：float 形态 `round(x, 2)` 与合法数量舍入（`_qval` 的 round(...,4)、T 数量键 round(v,2)）在 AST 层不可区分，不拦，靠 code review。
+
+### C【P2 · 已修】列定位签名去掉参数名依赖
+
+复核的 `locate(hdrs, keys)` / `pick_col(hdrs, wanted)` 语义等价重写绕过旧签名（依赖 alias/header 参数名）。新签名与参数名无关：**「enumerate/range(len) 循环 + 以检索词（本层/外层循环目标或函数参数）做 in 匹配 + 循环内 Return 索引」**。两个方向性约束防误伤（自测钉死）：
+1. in 的**左侧**必须是检索词——`'合计' in line` 聚合行豁免扫描的检索词是常量，不命中；
+2. 循环内必须有 Return——普通过滤/统计循环不命中。
+
+**修复过程反查出第 8 处真残留**：`recon_engine._cc`（主档 SKU 段 keyword→列索引查找器，查条码/标准品名/别名/结算属性/规格/单位六列）——已收敛到 `locate_column`（精确优先、多列命中阻断；旧版子串先到先得废除，多列时 SKU 段中文中止）。其余 6 处旧命中（apply_v17／inspect_schema／make_master／make_todos／monthly `table`／scan_blanks）逐一验尸为合法域内逻辑（选工作表、渲染表格、聚合扫描），方向性签名下全部正确豁免。
+
+### E【P3 · 已修（措辞）】一次性整读与表格宽度不一致
+
+`sha256(open(p,'rb').read())` 是已声明不拦的取舍，但 docstring 表格写「文件 SHA-256 → 唯一权威」比实际签名宽。已改为「**流式**文件哈希」，边界段落显式把一次性整读列入已声明不拦清单，并新增自测把该取舍钉死（防止未来悄悄扩大签名时语义失配）。
+
+### 验证
+
+- 门禁自测 11 项全过（新增 5：Decimal-round 植入、enumerate 植入、range(len) 植入、一次性整读合法、聚合扫描合法）
+- AST 真实扫描 `scripts/` 全目录：零疑似违例（含 `_cc` 收敛后）
+- 全量 `python -m unittest discover -s tests` → **153 tests OK**
+- 召回边界（如实声明，code review 兜底）：完全改名且换形态的等价重写、float 形态舍入、exec/getattr 级规避
+
+## 五、遗留
 
 - 门禁对 exec/getattr/动态字符串级规避无效（AST 的天然边界），依赖 code review——已在门禁 docstring 与本报告中明示，不另行「修复」。
+- 门禁召回边界第 1、2 条（见第四节 D/C）同属签名式扫描的固有代价。
 - `koujing_sha256` 若未来要落到复核包/复核锁，属新功能，不在收敛范围。
