@@ -1,5 +1,10 @@
 # 会话日志(最新在上)
 
+## 2026-11-21 00:26 | model=zcode-glm-5.3-flash | task=T004 完成
+- 摘要: T004 完成：koujing_sha256 落地裁决（用户选定「落地实现」）。事实核查确认：口径哈希仅载入时校验，「出账后复核前」改 _口径确认.json 无门禁变红； koujing.py docstring（宣称进复核锁）与协议文档（PR #8 改为如实声明）自相矛盾。裁决落 DECISIONS（现行），SPEC §4 开放问题销项，实现任务 T005 挂待办。
+- 事实(v2): mode=single | 文件 2 | ± +7/-1 | base=- | sha=- | branch=main || 验收: 未要求 | verify: PASS 12·WARN 0·ERROR 0 | 耗时: 0s
+- 留给下一个: 裁决已落 DECISIONS（2026-11-21 现行）。实现面：两引擎写 koujing_sha256 进 _结算结果.json 凭证 → make_review_packet 携带 → apply_review --check 比对凭证与当前口径文件；k oujing.py docstring 与协议文档同步
+
 ## 2026-11-21 00:23 | model=zcode-glm-5.3-flash | task=T003 完成
 - 摘要: T003 完成：健康扫描确认 docs/index.html 无时效性内容、README 对报告新路径显示正确；修复 .relay/manifest.json 白名单漂移——allowedTopLevel 移除 12 项死条目（两份报告的旧根路径、模板并入的 package.json/.editorconfig/src/scripts/.github、已摘除的 .v2c/user-audit.txt、忽略项 .DS_Store/out/.worktrees），收敛为与仓库现实一致的 17 项；relay_verify 快检 10 PASS/0 ERROR。另将最后一项真实遗留 koujing_sha256（口径确认协议曾承诺未实现）按协议挂入 SPEC §4 开放问题，待用户裁决。
 - 事实(v2): mode=single | 文件 2 | ± +3/-15 | base=- | sha=- | branch=main || 验收: 未要求 | verify: PASS 12·WARN 0·ERROR 0 | 耗时: 0s
