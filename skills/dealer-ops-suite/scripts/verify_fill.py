@@ -465,7 +465,23 @@ def main():
     ap.add_argument("--plan", required=True)
     ap.add_argument("--spec", required=True, help="字段规格 JSON（验收的可信根之一）")
     ap.add_argument("--values", required=True, help="用户确认值 JSON（验收的可信根之一）")
+    ap.add_argument("--review-release", required=True,
+                    help="含最终三文件放行凭证的审阅 JSON；当前 --result 必须是其主合同")
     args = ap.parse_args()
+
+    from contract_release import verify_final_release
+    try:
+        with open(args.review_release, encoding="utf-8") as fh:
+            review_release = json.load(fh)
+    except (OSError, ValueError) as exc:
+        print(f"✗ 无法读取最终放行凭证：{exc}")
+        return 1
+    release_ok, release_problems = verify_final_release(review_release, args.result)
+    if not release_ok:
+        for problem in release_problems:
+            print("✗ 最终放行门禁：" + problem)
+        return 1
+    print("✓ 最终放行门禁：主合同身份一致，主合同／防窜货附件／价格政策哈希均有效")
 
     if os.path.realpath(args.template) == os.path.realpath(args.result):
         print("✗ 模板与成品是同一个文件，比对无意义。请检查参数。")

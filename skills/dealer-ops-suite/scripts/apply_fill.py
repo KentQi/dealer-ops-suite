@@ -39,11 +39,55 @@ import zipfile
 PY = sys.executable
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from plan_trust import check_plan  # noqa: E402
+from plan_trust import check_plan, check_plan_selfconsistency, load_values, canon  # noqa: E402
 
 
 class EDSDKError(RuntimeError):
     pass
+
+
+def check_incremental_plan(plan, spec_path, values_path):
+    """增量修复计划（无值指纹）写入前的信任根绑定核对。
+
+    增量 plan 是手工从全量计划摘出的 op 子集，没有 values_digest 可供重编译复核，
+    因此必须显式绑定「用户确认值 + 规格」：每个 op 的字段必须是规格内已确认字段，
+    落笔文本必须与确认值（或其渲染结果）逐字一致；否则不得写入。
+    """
+    problems = check_plan_selfconsistency(plan)
+    try:
+        with open(spec_path, encoding="utf-8") as fh:
+            spec = json.load(fh)
+    except (OSError, ValueError) as exc:
+        return problems + [f"无法读取规格文件：{exc}"]
+    try:
+        values = load_values(values_path)
+    except (OSError, ValueError) as exc:
+        return problems + [f"无法读取确认值文件：{exc}"]
+    known_ids = {f["id"] for f in spec.get("fields", [])}
+    known_ids |= {c["id"] for c in spec.get("cells", [])}
+    known_ids |= {g["id"] for g in spec.get("grids", [])}
+    spec_fields = {f["id"]: f for f in spec.get("fields", [])}
+    for op in plan.get("ops", []):
+        fid = op.get("field_id", "?")
+        if known_ids and fid not in known_ids:
+            problems.append(f"{fid}：不在规格字段清单中，增量计划不得引入规格外字段")
+            continue
+        if fid not in values:
+            problems.append(f"{fid}：values.json 无该字段的用户确认值；"
+                            f"先把确认值补进 values.json 再执行增量修复")
+            continue
+        if op.get("kind") == "cell":
+            continue  # 表格格值由全量验收兜底，这里只要求字段已确认
+        field = spec_fields.get(fid) or {}
+        raw = values[fid]
+        rendered = raw
+        if isinstance(raw, str) and field.get("render"):
+            from build_plan import render
+            rendered = render(field["render"], raw.strip(), field.get("vtype"))
+        if canon(op.get("value")) not in (canon(raw), canon(rendered)):
+            problems.append(f"{fid}：落笔文本与用户确认值不符（应为「{str(rendered)[:30]}」，"
+                            f"实为「{str(op.get('value'))[:30]}」），已拒绝")
+    return problems
 
 
 def same_file(a, b):
@@ -211,11 +255,26 @@ def main():
     ap.add_argument("--file-id")
     ap.add_argument("--protect", required=True,
                     help="受保护路径（原始模板）：必需；目标正是它则拒绝写入")
-    ap.add_argument("--spec", help="字段规格 JSON（全量计划写入前复核用，必给）")
-    ap.add_argument("--values", help="用户确认值 JSON（全量计划写入前复核用，必给）")
+    ap.add_argument("--spec", required=True,
+                    help="字段规格 JSON（写入前信任根之一；会与写前审阅凭证绑定核对）")
+    ap.add_argument("--values", required=True,
+                    help="用户确认值 JSON（写入前信任根之一；增量计划逐条核对落笔值）")
+    ap.add_argument("--review", required=True,
+                    help="review_contract_package.py --approve-write 生成的写前审阅 JSON")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--no-save", action="store_true")
     args = ap.parse_args()
+
+    from contract_release import check_write_review
+    try:
+        with open(args.review, encoding="utf-8") as fh:
+            review = json.load(fh)
+    except (OSError, ValueError) as exc:
+        sys.exit(f"无法读取写前审阅记录：{exc}")
+    review_problems = check_write_review(review, {"spec": args.spec, "values": args.values})
+    if review_problems:
+        sys.exit("写前审阅门禁未通过，未写入任何内容：" + "；".join(review_problems))
+    print("写前审阅门禁通过：LLM 已合并、无阻断项，高风险处理记录完整。")
 
     if args.plan.endswith(".rejected"):
         sys.exit("这是 build_plan 校验失败时留存的排查文件（.rejected），不是可执行计划，已拒绝")
@@ -243,8 +302,15 @@ def main():
             sys.exit(7)
         print(f"计划可信性复核通过：{len(plan.get('ops', []))} 条操作与确认值逐条一致")
     else:
-        print("提示：增量修复计划（无值指纹），写入前无法独立核验；"
-              "收尾必须用全量计划重跑 verify_fill.py，否则不得交付。")
+        # 增量修复计划（无值指纹）：不得静默写入——逐条绑定用户确认值与规格。
+        inc_problems = check_incremental_plan(plan, args.spec, args.values)
+        if inc_problems:
+            print("✗ 增量计划未通过信任根核对，未写入任何内容：")
+            for p in inc_problems[:10]:
+                print("   ·", p)
+            sys.exit(7)
+        print("增量修复计划（无值指纹）：已逐条核对落笔值与用户确认值一致；"
+              "收尾仍须用全量计划重跑 verify_fill.py，否则不得交付。")
 
     # file_id 只是内存实例的键，与路径没有强制绑定；写错实例会把内容灌进另一份文档。
     # 因此先查出这个 file_id 到底落在哪个路径，再和受保护路径比对。

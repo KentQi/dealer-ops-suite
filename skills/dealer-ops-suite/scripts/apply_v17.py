@@ -4,7 +4,7 @@
 
 工作流位置：load_master.py -> recon_engine.py -> apply_v17.py -> L6 复核。
 
-- 引擎只负责 00–07 的结算计算与六条恒等式；附表由本脚本按已确认口径渲染。
+- 引擎只负责 00–07 的结算计算、数量勾稽与金额分列；附表由本脚本按已确认口径渲染。
 - 08 试用装与中小样：甲方期初 → 期间发货 → 乙方使用 → 甲方期末，期末结转下期。
 - 09 效期预警：能力完整保留，由 expiry.enabled 开关控制；关闭时不建表、
   且 00 表由引擎按同一开关裁剪，全簿零效期字样。
@@ -387,6 +387,25 @@ def build_09(wb, kj, sidecar):
     return ws, len(items)
 
 
+def refresh_settlement_result(workbook_path):
+    """工作簿被附表渲染再次保存后，同步结果凭证哈希并保留原 rule_result。"""
+    result_path = os.path.join(os.path.dirname(os.path.abspath(workbook_path)), "_结算结果.json")
+    if not os.path.exists(result_path):
+        return None
+    from review_common import sha256_file
+    with open(result_path, encoding="utf-8") as handle:
+        document = json.load(handle)
+    if not isinstance(document, dict) or not isinstance(document.get("rule_result"), dict):
+        raise ValueError("_结算结果.json 缺少 rule_result，拒绝沿用或覆盖")
+    document["workbook"] = {"path": os.path.abspath(workbook_path), "sha256": sha256_file(workbook_path)}
+    temp = result_path + ".tmp"
+    with open(temp, "w", encoding="utf-8") as handle:
+        json.dump(document, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+    os.replace(temp, result_path)
+    return result_path
+
+
 def main():
     ap = argparse.ArgumentParser(description="v1.7 附表渲染与交付门禁")
     ap.add_argument("--cfg", required=True, help="RECON_CFG JSON 文件路径")
@@ -479,6 +498,11 @@ def main():
     wb.save(out)
     wb.close()
     clean_properties(out)
+    try:
+        refresh_settlement_result(out)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        sys.stderr.write("[中止] 附表已保存，但结算结果凭证同步失败，禁止交付：%s\n" % exc)
+        return 1
 
     if not a.no_gate:
         try:

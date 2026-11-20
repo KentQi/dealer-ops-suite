@@ -67,6 +67,17 @@ def _load_master_values(wb):
         ws = wb["合同"]
         headers = [c.value for c in ws[1]]
         out["_合同编号"] = ws.cell(row=2, column=headers.index("合同编号") + 1).value if "合同编号" in headers else ""
+        # 同一份主档可有多份合同；为候选 target 提供按合同编号定位的现值，
+        # 既不把模板示例行当成本次新合同，也能正确显示既有合同的冲突项。
+        if "合同编号" in headers:
+            number_col = headers.index("合同编号") + 1
+            for row in range(2, ws.max_row + 1):
+                number = str(ws.cell(row=row, column=number_col).value or "").strip()
+                if not number:
+                    continue
+                for ci, header in enumerate(headers, 1):
+                    if header:
+                        out[f"合同.{header}@合同编号={number}"] = ws.cell(row=row, column=ci).value
     if "主体" in wb.sheetnames:
         ws = wb["主体"]
         headers = [c.value for c in ws[1]]
@@ -626,16 +637,27 @@ function loadDraft(){
 }
 
 /* ---------- 提交 ---------- */
+function finalContractNo(){
+  const row=S.find(r=>String(r.target||'').split('@')[0]==='合同.合同编号');
+  return row?String(row.val||'').trim():'';
+}
+function finalTarget(r,contractNo){
+  const raw=String(r.target||''), base=raw.split('@')[0];
+  if(!base.startsWith('合同.')||base==='合同.合同编号') return raw;
+  // 用户可能修正合同编号；提交时以页面最终值重建定位，绝不沿用旧键。
+  return contractNo?base+'@合同编号='+contractNo:base;
+}
 function buildPayload(){
-  const op=byId('operator').value.trim();
+  const op=byId('operator').value.trim(), contractNo=finalContractNo();
   const fields=[], skipped=[];
   S.forEach(r=>{
-    if(r.use) fields.push({field:r.field,target:r.target,value:r.val,from:r.status});
-    else skipped.push({field:r.field,target:r.target,kept:r.current});
+    const target=finalTarget(r,contractNo);
+    if(r.use) fields.push({field:r.field,target,value:r.val,from:r.status});
+    else skipped.push({field:r.field,target,kept:r.current});
   });
   return {
     schema:'contract-confirm/v1',
-    meta:{customer:META.customer,contract:META.contract,operator:op,
+    meta:{customer:META.customer,contract:contractNo||META.contract,operator:op,
           memo:byId('memo').value.trim(),confirmed_at:new Date().toISOString(),
           source_file:META.source_file,page:META.page},
     fields, skipped,
@@ -645,6 +667,8 @@ function buildPayload(){
 function precheck(){
   const op=byId('operator').value.trim();
   if(!op){toast('请先填写确认人姓名');byId('operator').focus();return false;}
+  const writesContract=S.some(r=>r.use&&String(r.target||'').split('@')[0].startsWith('合同.'));
+  if(writesContract&&!finalContractNo()){toast('采用合同字段前，请填写并确认合同编号');return false;}
   const total=ATTS.reduce((s,a)=>s+a.size,0);
   if(total>MAX_ALL){toast('附件合计超过 15MB，请精简后重试');return false;}
   return true;

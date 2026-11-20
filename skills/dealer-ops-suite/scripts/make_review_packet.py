@@ -1,23 +1,23 @@
 """生成 L6 LLM 复核包（结构化底稿，token 友好）。
 
 用法：
-    python3 make_review_packet.py <工作簿.xlsx> [--master _主档.xlsx] [--out packet.json] [--md packet.md]
+    python3 make_review_packet.py <工作簿.xlsx> --cfg <RECON_CFG.json> [--master _主档.xlsx] [--out packet.json] [--md packet.md]
 
 设计原则：
 - 只做确定性取数（openpyxl 读单元格 + 标签关键词扫描），不重算、不联网、不调用外部模型；
 - 取不到的数字一律写 null 并追加 warnings，绝不臆造 0；
-- 若环境变量 RECON_CFG 有效，period / asof / sources / contract 直接取自配置，不重复推断；
+- 优先用 --cfg 显式读取本期配置；未传时兼容 RECON_CFG 环境变量，period / asof / sources / contract 不重复推断；
 - 除 generated_at 外，同一输入的输出完全一致（JSON 与 Markdown 均如此）。
 
 复核包字段（schema=dealer-ops/review-packet@1）：
-    schema, generated_at, workbook{path,sha256,size}, master{path,sha256}|null,
+    schema, generated_at, business_type, workbook{path,sha256,size}, master{path,sha256}|null,
     sources[{role,path,sha256}], period|null, asof|null, sheets[{name,rows,cols}],
     figures{opening_qty,opening_amount,settled_qty,settled_amount,diff_qty,diff_amount,
-            addback_qty,addback_amount,tiehua_total,closing_inventory_value,period_end|null},
-    sku_rows[{bar,name,opening_qty,settled_qty,settled_amount,diff_qty,unit_price}],
-    tiehua_rows[{bar,name,settled_qty,standard,amount}],
+            addback_qty,addback_amount,tiehua_total,period_end|null, ...业务模式扩展字段},
+    rule_result, sku_rows[{bar,name,opening_qty,settled_qty,settled_amount,diff_qty,unit_price,...}],
+    priced_rows[逐笔数量、单价、金额与取价依据], tiehua_rows[{bar,name,settled_qty,standard,amount,...}],
     claims[{sheet,cell,text,numbers[]}], cross_refs[{sheet,cell,text,refs[]}],
-    contract{no,method,basis,objection_days,signback_days,pay_day_text}|null,
+    contract{no,method,basis,objection_days,signback_days,pay_day_text,buyout_date,payment_due_date}|null,
     redline_scan[{id,pattern,hits[{sheet,cell,text}]}],
     checklist[{id,item}], warnings[]
 
@@ -469,29 +469,6 @@ def _fig_tiehua_total(wb):
     return None, None
 
 
-def _fig_closing_inventory_value(wb):
-    ws = _sheet(wb, "01-对账单")
-    if ws is not None:
-        hit = _find_cell(ws, "⑦", "期末乙方库存货值")
-        if hit:
-            value, coord = _right(ws, hit[0], hit[1])
-            number = _to_num(value)
-            if number is not None:
-                return number, {"sheet": "01-对账单", "cell": coord}
-    ws = _sheet(wb, "06-乙方库存明细")
-    if ws is not None:
-        header_row, cols = _find_header(ws, ("库存货值",))
-        if header_row is not None:
-            for row in range(header_row + 1, ws.max_row + 1):
-                first = ws.cell(row=row, column=1).value
-                if isinstance(first, str) and _norm(first).startswith("结算类小计"):
-                    number = _cell_num(ws, row, cols["库存货值"])
-                    if number is not None:
-                        return number, {"sheet": "06-乙方库存明细",
-                                        "cell": ws.cell(row=row, column=cols["库存货值"]).coordinate}
-    return None, None
-
-
 FIGURE_EXTRACTORS = (
     ("opening_qty", _fig_opening_qty),
     ("opening_amount", _fig_opening_amount),
@@ -502,7 +479,6 @@ FIGURE_EXTRACTORS = (
     ("addback_qty", _fig_addback_qty),
     ("addback_amount", _fig_addback_amount),
     ("tiehua_total", _fig_tiehua_total),
-    ("closing_inventory_value", _fig_closing_inventory_value),
 )
 
 
@@ -777,7 +753,17 @@ def _scan_asof(wb):
     return None
 
 
-def _read_cfg(warnings):
+def _read_cfg(warnings, cfg_path=None):
+    if cfg_path:
+        path = os.path.abspath(cfg_path)
+        try:
+            with open(path, encoding="utf-8") as handle:
+                cfg = json.load(handle)
+        except (OSError, ValueError, TypeError) as exc:
+            raise PacketError("[无法读取配置] %s\n原因：%s" % (path, exc)) from exc
+        if not isinstance(cfg, dict):
+            raise PacketError("[配置格式错误] %s\n--cfg 文件顶层必须是 JSON 对象。" % path)
+        return cfg
     raw = os.environ.get("RECON_CFG")
     if not raw or not raw.strip():
         return None
@@ -831,17 +817,42 @@ def _resolve_contract(cfg, warnings):
         warnings.append("未提供有效 RECON_CFG，contract 置 null（合同条款须人工核对）")
         return None
     contract = cfg.get("contract")
-    if not isinstance(contract, dict) or not any(contract.get(key) for key in
-                                                ("no", "method", "basis", "objection_days",
-                                                 "signback_days", "pay_day_text")):
+    keys = ("no", "method", "basis", "objection_days", "signback_days", "pay_day_text",
+            "buyout_date", "payment_due_date")
+    if not isinstance(contract, dict) or not any(contract.get(key) for key in keys):
         warnings.append("RECON_CFG 缺少 contract 信息，contract 置 null")
         return None
-    return {key: contract.get(key) for key in
-            ("no", "method", "basis", "objection_days", "signback_days", "pay_day_text")}
+    return {key: contract.get(key) for key in keys}
 
 
-def _resolve_sources(cfg, warnings):
+def _resolve_sources(cfg, warnings, settlement_document=None):
     sources = []
+    roles = (("receipts", "returns", "sales")
+             if (isinstance(cfg, dict) and cfg.get("business_type") == "monthly_buyout")
+             or (isinstance(settlement_document, dict)
+                 and settlement_document.get("business_type") == "monthly_buyout")
+             else ("jia", "sales", "inventory"))
+    # P2-13：优先采用结算结果凭证里记录的「实际解析后绝对路径 + 哈希」——
+    # _数据映射.json 等显式映射指定的源文件可能与 cfg.base_dir + cfg.sources 重算路径不同。
+    recorded = settlement_document.get("sources") if isinstance(settlement_document, dict) else None
+    if isinstance(recorded, dict) and recorded:
+        for role in roles:
+            entry = recorded.get(role)
+            if not isinstance(entry, dict) or not entry.get("path"):
+                warnings.append("结算结果凭证缺少 role=%s 的源文件绑定，sources 中该角色 path/sha256 置 null" % role)
+                sources.append({"role": role, "path": None, "sha256": None})
+                continue
+            path = os.path.abspath(entry["path"])
+            digest = None
+            if os.path.isfile(path):
+                try:
+                    digest = sha256_file(path)
+                except OSError as exc:
+                    warnings.append("源文件无法读取（role=%s）：%s（%s）" % (role, path, exc))
+            else:
+                warnings.append("源文件不存在（role=%s）：%s" % (role, path))
+            sources.append({"role": role, "path": path, "sha256": digest})
+        return sources
     if not isinstance(cfg, dict):
         warnings.append("未提供有效 RECON_CFG，sources 置空（无法绑定源文件哈希）")
         return sources
@@ -850,13 +861,15 @@ def _resolve_sources(cfg, warnings):
     if not isinstance(base_dir, str) or not isinstance(source_names, dict):
         warnings.append("RECON_CFG 缺少 base_dir/sources，sources 置空")
         return sources
-    for role in ("jia", "sales", "inventory"):
+    # 旧结果（无 sources 凭证字段）才从 cfg.base_dir + cfg.sources 回算路径。
+    for role in roles:
         name = source_names.get(role)
         if not isinstance(name, str) or not name.strip():
             warnings.append("RECON_CFG.sources 缺少 role=%s，sources 中该角色 path/sha256 置 null" % role)
             sources.append({"role": role, "path": None, "sha256": None})
             continue
-        path = os.path.abspath(os.path.join(base_dir, name.strip()))
+        path = os.path.abspath(name.strip() if os.path.isabs(name.strip())
+                               else os.path.join(base_dir, name.strip()))
         digest = None
         if os.path.isfile(path):
             try:
@@ -908,8 +921,8 @@ def _count_formula_cells(path):
 
 
 # ---------------------------------------------------------------- 组装
-def build_packet(workbook_path, master_path=None):
-    """读取工作簿与配置，返回复核包 dict（含 warnings）。"""
+def build_packet(workbook_path, master_path=None, cfg_path=None):
+    """读取工作簿与显式配置文件（或兼容的环境变量），返回复核包 dict。"""
     workbook_abs = os.path.abspath(workbook_path)
     if not os.path.isfile(workbook_abs):
         raise PacketError("[找不到工作簿] %s\n请确认路径（本脚本只读 .xlsx，.xls 请先另存为 .xlsx）。"
@@ -927,23 +940,48 @@ def build_packet(workbook_path, master_path=None):
 
     warnings = []
     try:
-        cfg = _read_cfg(warnings)
+        from review_settlement import (
+            load_settlement_result, project_settlement, validate_settlement_inputs,
+        )
+        settlement_document = load_settlement_result(workbook_abs, workbook_sha)
+    except (ImportError, ValueError) as exc:
+        wb.close()
+        raise PacketError("[结算结果凭证无效] %s" % exc) from exc
+    try:
+        cfg = _read_cfg(warnings, cfg_path)
         period = _resolve_period(cfg, wb, warnings)
         asof = _resolve_asof(cfg, wb, warnings)
         master = _resolve_master(master_path, cfg, warnings)
-        sources = _resolve_sources(cfg, warnings)
+        sources = _resolve_sources(cfg, warnings, settlement_document)
         contract = _resolve_contract(cfg, warnings)
 
-        figures = {}
-        for key, extractor in FIGURE_EXTRACTORS:
-            value, _source = extractor(wb)
-            if value is None:
-                warnings.append("未取到 figures.%s（按标签扫描 00/01/02/06 未命中），已置 null" % key)
-            figures[key] = value
-        figures["period_end"] = period["end"] if period else None
-
-        sku_rows = _scan_sku_rows(wb, warnings)
-        tiehua_rows = _scan_tiehua_rows(wb, warnings)
+        if settlement_document is not None:
+            try:
+                validate_settlement_inputs(settlement_document, master, sources)
+                projected = project_settlement(settlement_document, wb)
+            except (KeyError, TypeError, ValueError) as exc:
+                raise PacketError("[结算结果投影失败] %s" % exc) from exc
+            business_type = settlement_document["business_type"]
+            rule_result = settlement_document["rule_result"]
+            figures = projected["figures"]
+            sku_rows = projected["sku_rows"]
+            priced_rows = projected["priced_rows"]
+            tiehua_rows = projected["tiehua_rows"]
+            warnings.extend(projected["warnings"])
+        else:
+            business_type = cfg.get("business_type") if isinstance(cfg, dict) else None
+            rule_result = None
+            priced_rows = []
+            warnings.append("未找到同目录 _结算结果.json；仅按历史工作簿标签取数，不作为本期规则复算凭证")
+            figures = {}
+            for key, extractor in FIGURE_EXTRACTORS:
+                value, _source = extractor(wb)
+                if value is None:
+                    warnings.append("未取到 figures.%s（按标签扫描 00/01/02/06 未命中），已置 null" % key)
+                figures[key] = value
+            figures["period_end"] = period["end"] if period else None
+            sku_rows = _scan_sku_rows(wb, warnings)
+            tiehua_rows = _scan_tiehua_rows(wb, warnings)
 
         skip_texts = set()
         for row in sku_rows:
@@ -973,6 +1011,7 @@ def build_packet(workbook_path, master_path=None):
     packet = {
         "schema": SCHEMA_PACKET,
         "generated_at": iso_now(),
+        "business_type": business_type,
         "workbook": {"path": workbook_abs, "sha256": workbook_sha, "size": workbook_size},
         "master": master,
         "sources": sources,
@@ -980,7 +1019,9 @@ def build_packet(workbook_path, master_path=None):
         "asof": asof,
         "sheets": sheets,
         "figures": figures,
+        "rule_result": rule_result,
         "sku_rows": sku_rows,
+        "priced_rows": priced_rows,
         "tiehua_rows": tiehua_rows,
         "claims": claims,
         "cross_refs": cross_refs,
@@ -1013,7 +1054,7 @@ def render_md(packet):
     workbook = packet["workbook"]
     lines.append("# 复核包 · %s" % os.path.basename(workbook["path"]))
     lines.append("")
-    lines.append("- schema：%s" % _code(packet["schema"]))
+    lines.append("- schema：%s；业务模式：%s" % (_code(packet["schema"]), _code(packet.get("business_type") or "legacy")))
     lines.append("- 工作簿：%s（sha256 %s，%s 字节）"
                  % (_code(workbook["path"]), _code(workbook["sha256"]), _fmt(workbook["size"])))
     master = packet["master"]
@@ -1029,19 +1070,19 @@ def render_md(packet):
         lines.append("- 期间：未识别；数据基准日：%s" % (packet["asof"] or "未识别"))
     contract = packet["contract"]
     if contract:
-        lines.append("- 合同：编号 %s；结算方式 %s；结算基数 %s；异议期 %s 个工作日；"
-                     "签回期 %s 个工作日；付款日 %s"
-                     % (contract.get("no") or "—", contract.get("method") or "—",
-                        contract.get("basis") or "—", _fmt(contract.get("objection_days")),
-                        _fmt(contract.get("signback_days")), contract.get("pay_day_text") or "—"))
+        lines.append("- 合同：编号 %s；业务类型 %s；结算基数 %s；异议期 %s 个工作日；签回期 %s 个工作日；"
+                     "付款日 %s；买断日 %s；付款截止日 %s"
+                     % (contract.get("no") or "—", contract.get("method") or "—", contract.get("basis") or "—",
+                        _fmt(contract.get("objection_days")), _fmt(contract.get("signback_days")),
+                        contract.get("pay_day_text") or "—", contract.get("buyout_date") or "—",
+                        contract.get("payment_due_date") or "—"))
     else:
         lines.append("- 合同：未从 RECON_CFG 取到（置 null）")
     lines.append("- 源文件：")
     if packet["sources"]:
         for source in packet["sources"]:
             lines.append("  - %s：%s（sha256 %s）"
-                         % (source["role"], _code(source["path"] or "—"),
-                            _code(source["sha256"] or "—")))
+                         % (source["role"], _code(source["path"] or "—"), _code(source["sha256"] or "—")))
     else:
         lines.append("  - （无）")
     lines.append("- 工作表（%d）：%s" % (len(packet["sheets"]), "；".join(
@@ -1052,24 +1093,32 @@ def render_md(packet):
     lines.append("")
     lines.append("| 字段 | 值 |")
     lines.append("|---|---|")
-    for key, _extractor in FIGURE_EXTRACTORS:
-        lines.append("| %s | %s |" % (key, _fmt(packet["figures"].get(key))))
-    lines.append("| period_end | %s |" % (packet["figures"].get("period_end") or "—"))
+    for key, value in packet["figures"].items():
+        lines.append("| %s | %s |" % (key, _fmt(value)))
     lines.append("")
 
     lines.append("## 二、逐 SKU（sku_rows，%d 行）" % len(packet["sku_rows"]))
     lines.append("")
     if packet["sku_rows"]:
-        lines.append("| 条码 | 名称 | 期初数量 | 结算数量 | 结算金额 | 差异数量 | 单价 |")
-        lines.append("|---|---|---|---|---|---|---|")
+        lines.append("| 条码 | 名称 | 期初数量（仅铺货） | 结算／买断数量 | 结算／买断金额 | 盈亏数量（仅铺货） |")
+        lines.append("|---|---|---|---|---|---|")
         for row in packet["sku_rows"]:
-            lines.append("| %s | %s | %s | %s | %s | %s | %s |"
-                         % (row["bar"] or "—", row["name"] or "—",
-                            _fmt(row["opening_qty"]), _fmt(row["settled_qty"]),
-                            _fmt(row["settled_amount"]), _fmt(row["diff_qty"]),
-                            _fmt(row["unit_price"])))
+            lines.append("| %s | %s | %s | %s | %s | %s |"
+                         % (row["bar"] or "—", row["name"] or "—", _fmt(row["opening_qty"]),
+                            _fmt(row["settled_qty"]), _fmt(row["settled_amount"]), _fmt(row["diff_qty"])))
     else:
         lines.append("（未取到）")
+    lines.append("")
+    lines.append("### 逐笔取价（priced_rows，%d 行；供 R1/R4 核对）" % len(packet.get("priced_rows") or []))
+    lines.append("")
+    for row in packet.get("priced_rows") or []:
+        lines.append("- %s %s｜%s｜%s｜%s｜数量 %s｜单价 %s｜金额 %s｜%s"
+                     % (row.get("role") or row.get("kind") or "流水", row.get("id") or "—",
+                        row.get("date") or "—", row.get("barcode") or "—", row.get("name") or "—",
+                        _fmt(row.get("quantity")), _fmt(row.get("unit_price")), _fmt(row.get("amount")),
+                        row.get("price_evidence") or "—"))
+    if not packet.get("priced_rows"):
+        lines.append("（无逐笔凭证；历史标签模式须直接回表复核）")
     lines.append("")
 
     lines.append("## 三、贴花明细（tiehua_rows，%d 行）" % len(packet["tiehua_rows"]))
@@ -1174,15 +1223,13 @@ def _print_summary(packet, json_path, md_path):
           % (packet["workbook"]["path"], packet["workbook"]["sha256"][:16],
              _fmt(packet["workbook"]["size"])))
     print("  期间    : %s" % period_text)
-    print("  关键数  : 期初 %s 件 / %s 元；结算 %s 件 / %s 元；差异 %s 件 / %s 元；"
-          "回加 %s 件 / %s 元；贴花 %s 元；期末库存 %s 元"
-          % (_show(figures["opening_qty"]), _show(figures["opening_amount"]),
-             _show(figures["settled_qty"]), _show(figures["settled_amount"]),
-             _show(figures["diff_qty"]), _show(figures["diff_amount"]),
-             _show(figures["addback_qty"]), _show(figures["addback_amount"]),
-             _show(figures["tiehua_total"]), _show(figures["closing_inventory_value"])))
-    print("  明细    : sku_rows %d 行 / tiehua_rows %d 行 / claims %d 条 / cross_refs %d 条 / 红线命中 %d 类"
-          % (len(packet["sku_rows"]), len(packet["tiehua_rows"]),
+    print("  业务模式: %s" % (packet.get("business_type") or "legacy"))
+    print("  关键数  : 期初（仅铺货）%s 件；结算／买断 %s 件 / %s 元；盈亏（仅铺货）%s 件 / %s 元；贴花 %s 元"
+          % (_show(figures.get("opening_qty")), _show(figures.get("settled_qty")),
+             _show(figures.get("settled_amount")), _show(figures.get("diff_qty")),
+             _show(figures.get("diff_amount")), _show(figures.get("tiehua_total"))))
+    print("  明细    : sku_rows %d 行 / priced_rows %d 行 / tiehua_rows %d 行 / claims %d 条 / cross_refs %d 条 / 红线命中 %d 类"
+          % (len(packet["sku_rows"]), len(packet.get("priced_rows") or []), len(packet["tiehua_rows"]),
              len(packet["claims"]), len(packet["cross_refs"]), redline_hits))
     print("  警告    : %d 条" % len(packet["warnings"]))
     print("  JSON    : %s" % json_path)
@@ -1193,12 +1240,13 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         description="生成 L6 LLM 复核包（dealer-ops/review-packet@1）")
     parser.add_argument("workbook", help="被复核的对账工作簿（.xlsx）")
-    parser.add_argument("--master", help="客户主档 _主档.xlsx（默认取 RECON_CFG.master_path）")
+    parser.add_argument("--cfg", help="本期 RECON_CFG.json；显式传入后不再依赖 RECON_CFG 环境变量")
+    parser.add_argument("--master", help="客户主档 _主档.xlsx（默认取配置文件 master_path）")
     parser.add_argument("--out", help="复核包 JSON 输出路径（默认 <工作簿目录>/_复核记录/<工作簿名>_复核包.json）")
     parser.add_argument("--md", help="复核包 Markdown 输出路径（默认与 JSON 同名 .md）")
     args = parser.parse_args(argv)
     try:
-        packet = build_packet(args.workbook, args.master)
+        packet = build_packet(args.workbook, args.master, args.cfg)
         out_path, md_path = _default_paths(packet["workbook"]["path"], args.out, args.md)
         _write_text(out_path, json.dumps(packet, ensure_ascii=False, indent=2) + "\n")
         _write_text(md_path, render_md(packet) + "\n")

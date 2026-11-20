@@ -2,7 +2,9 @@
 """把对账结果回写主档「期间」表（B5）。
 
 默认 dry-run：只打印将要发生的变更，不写文件。
-加 --write 才落盘；写前自动备份，写后原子替换。
+--write 必须同时提供 --from-json，并验证同目录 _结算结果.json、主档快照、归档报告及复核锁
+pre/post 哈希链；默认复核目录为结果工作簿同目录 _复核记录，可用 --result / --review-dir 改路径。
+验证通过才自动备份并原子替换；完全相同的重复操作可幂等 noop。
 
 幂等：同一 period 已存在则更新该行，不追加重复行。
 
@@ -49,9 +51,13 @@ from datetime import datetime
 
 import openpyxl
 
+from review_common import LOCK_NAME, REVIEW_DIR, SCHEMA_REPORT, sha256_file
+
 # key -> (中文表头, 允许的别名)
 FIELDS = [
     ("period", "期间", ("期间", "对账期间", "月份")),
+    ("contract_no", "合同编号", ("合同编号",)),
+    ("business_type", "业务类型", ("业务类型", "结算方式")),
     ("asof", "数据基准日", ("数据基准日", "基准日", "库存基准日")),
     ("opening_qty", "期初数量", ("期初数量", "期初件数")),
     ("opening_amount", "期初金额", ("期初金额", "期初货值")),
@@ -61,6 +67,8 @@ FIELDS = [
     ("diff_amount", "差异金额", ("差异金额",)),
     ("sticker_amount", "贴花金额", ("贴花金额", "贴花费用")),
     ("sticker_pay", "贴花兑付方式", ("贴花兑付方式", "兑付方式", "贴花兑付")),
+    ("buyout_date", "买断日", ("买断日",)),
+    ("payment_due_date", "付款截止日", ("付款截止日", "付款截止日期")),
     ("statement_no", "对账单编号", ("对账单编号", "对账单号")),
     ("status", "状态", ("状态",)),
     ("note", "备注", ("备注",)),
@@ -70,10 +78,8 @@ NUMERIC = {
     "opening_qty", "opening_amount", "settle_qty", "settle_amount",
     "diff_qty", "diff_amount", "sticker_amount",
 }
-NON_NEGATIVE = {
-    "opening_qty", "opening_amount", "settle_qty", "settle_amount",
-    "sticker_amount",
-}
+# 期初是甲方 BIP 快照，不应为负；本期净结算与贴花允许退货冲减为负。
+NON_NEGATIVE = {"opening_qty", "opening_amount"}
 STATUSES = {"待确认", "已确认", "已对账", "已付款", "已签回", "已收款", "待处理", "已作废"}
 PAY_MODES = {"抵扣货款", "分开支付", "待定", ""}
 
@@ -151,15 +157,18 @@ def collect(args):
     if not 1 <= int(values["period"][4:]) <= 12:
         fail(f"期间月份非法：{values['period']!r}")
 
-    if values["asof"]:
-        values["asof"] = str(values["asof"]).strip()
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", values["asof"]):
-            fail(f"数据基准日必须是 YYYY-MM-DD；当前 {values['asof']!r}")
+    for key in ("asof", "buyout_date", "payment_due_date"):
+        if values[key]:
+            values[key] = str(values[key]).strip()
+            try:
+                datetime.strptime(values[key], "%Y-%m-%d")
+            except ValueError:
+                fail(f"{dict((k, l) for k, l, _ in FIELDS)[key]}须为有效的 YYYY-MM-DD：{values[key]!r}")
 
     for key in NUMERIC:
         values[key] = parse_number(values[key], key, dict((k, l) for k, l, _ in FIELDS)[key])
 
-    for key in ("sticker_pay", "status", "statement_no", "note"):
+    for key in ("contract_no", "business_type", "sticker_pay", "status", "statement_no", "note"):
         value = values[key]
         values[key] = None if value is None else str(value).strip()
 
@@ -285,10 +294,93 @@ def save_atomic(wb, ledger):
         raise
 
 
+def _json_object(path, label):
+    try:
+        with open(path, encoding="utf-8") as handle:
+            value = json.load(handle)
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"{label}无法读取：{exc}") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"{label}顶层必须是对象")
+    return value
+
+
+def _same_writeback_value(key, left, right):
+    if key in NUMERIC and left is not None and right is not None:
+        try:
+            return float(left) == float(right)
+        except (TypeError, ValueError):
+            return False
+    return left == right
+
+
+def verify_write_provenance(ledger, from_json, result_path, review_dir, values):
+    """真实写入必须绑定出账结果、原工作簿、复核报告及 pre/post 哈希链。"""
+    result_path = os.path.abspath(result_path)
+    document = _json_object(result_path, "结算结果凭证")
+    if document.get("schema") != "dealer-ops/settlement-result@1":
+        raise ValueError("结算结果凭证 schema 无效")
+    business_type = document.get("business_type")
+    rule_result = document.get("rule_result")
+    if business_type not in ("consignment", "monthly_buyout") \
+            or not isinstance(rule_result, dict) or rule_result.get("business_type") != business_type:
+        raise ValueError("结算结果凭证业务类型无效或与规则结果不一致")
+    if os.path.realpath(document.get("writeback_path") or "") != os.path.realpath(from_json):
+        raise ValueError("--from-json 不是结算结果凭证绑定的回写文件")
+    expected = document.get("writeback")
+    if not isinstance(expected, dict):
+        raise ValueError("结算结果凭证缺少内嵌 writeback")
+    for key in ("contract_no", "business_type", "settle_amount"):
+        if key not in expected or expected.get(key) is None or expected.get(key) == "":
+            raise ValueError(f"结算结果凭证的内嵌 writeback 缺少必填字段：{key}")
+    for key in ("contract_no", "business_type"):
+        if not str(expected.get(key)).strip():
+            raise ValueError(f"结算结果凭证的内嵌 writeback 字段为空：{key}")
+    mismatches = [key for key, _label, _aliases in FIELDS
+                  if not _same_writeback_value(key, values.get(key), expected.get(key))]
+    if mismatches:
+        raise ValueError("本次回写值与已复核结算结果不一致：" + "、".join(mismatches))
+
+    master = document.get("master")
+    if not isinstance(master, dict) or not master.get("path") or not master.get("sha256"):
+        raise ValueError("结算结果凭证缺少出账时主档路径／哈希")
+    if os.path.realpath(master["path"]) != os.path.realpath(ledger):
+        raise ValueError("目标主档不是本次出账及复核绑定的主档")
+    if sha256_file(ledger) != master["sha256"]:
+        raise ValueError("主档在出账后已变更，须重新出账并复核，不能沿用旧回写结果")
+
+    workbook = document.get("workbook")
+    if not isinstance(workbook, dict) or not workbook.get("path") or not workbook.get("sha256"):
+        raise ValueError("结算结果凭证缺少被复核工作簿路径／哈希")
+    workbook_path = os.path.abspath(workbook["path"])
+    if not os.path.isfile(workbook_path):
+        raise ValueError(f"结算结果绑定的工作簿不存在：{workbook_path}")
+    review_dir = os.path.abspath(review_dir or os.path.join(os.path.dirname(workbook_path), REVIEW_DIR))
+    lock = _json_object(os.path.join(review_dir, LOCK_NAME), "复核锁")
+    if lock.get("pre_sha256") != workbook["sha256"]:
+        raise ValueError("复核锁 pre_sha256 与出账工作簿哈希不一致")
+    if sha256_file(workbook_path) != lock.get("post_sha256"):
+        raise ValueError("工作簿在复核后已变更，复核锁失效")
+    if lock.get("verdict") not in ("通过", "有条件通过"):
+        raise ValueError("复核结论不是通过／有条件通过，禁止回写")
+    report_name = lock.get("report")
+    if not isinstance(report_name, str) or not report_name.strip() \
+            or os.path.basename(report_name) != report_name:
+        raise ValueError("复核锁缺少有效的归档报告文件名")
+    report = _json_object(os.path.join(review_dir, report_name), "归档复核报告")
+    if report.get("schema") != SCHEMA_REPORT or report.get("workbook_sha256") != lock["pre_sha256"] \
+            or report.get("verdict") != lock["verdict"]:
+        raise ValueError("归档复核报告与复核锁不一致")
+
+
 def main():
     ap = argparse.ArgumentParser(description="把对账结果回写主档「期间」表（默认 dry-run）")
     ap.add_argument("ledger", help="_主档.xlsx 路径")
     ap.add_argument("--period", help="YYYYMM，如 202610")
+    ap.add_argument("--contract-no", help="本次对账对应的合同编号")
+    ap.add_argument("--business-type", help="铺货代销 / 月结买断")
+    ap.add_argument("--buyout-date", help="月结买断日 YYYY-MM-DD")
+    ap.add_argument("--payment-due-date", help="付款截止日 YYYY-MM-DD")
     ap.add_argument("--asof", help="数据基准日 YYYY-MM-DD")
     ap.add_argument("--opening-qty", type=float, help="期初数量")
     ap.add_argument("--opening-amount", type=float, help="期初金额")
@@ -301,10 +393,14 @@ def main():
     ap.add_argument("--statement-no", help="对账单编号")
     ap.add_argument("--status", help="状态：待确认/已确认/已对账/已付款/已签回/已收款")
     ap.add_argument("--note", help="备注")
-    ap.add_argument("--from-json", help="从 JSON 读取字段（英文或中文键）")
-    ap.add_argument("--write", action="store_true", help="确认写入；不加则只 dry-run")
+    ap.add_argument("--from-json", help="从 JSON 读取字段（--write 时必须提供）")
+    ap.add_argument("--result", help="结算结果凭证；默认 <from-json 目录>/_结算结果.json")
+    ap.add_argument("--review-dir", help="复核记录目录；默认 <结果工作簿目录>/_复核记录")
+    ap.add_argument("--write", action="store_true", help="确认写入；须绑定已复核结果，不加则只 dry-run")
     ap.add_argument("--json", action="store_true", help="输出机器可读结果")
     args = ap.parse_args()
+    if args.write and not args.from_json:
+        fail("--write 必须提供 --from-json，不能只用命令行数值绕过结果与复核凭证")
 
     ledger = os.path.abspath(args.ledger)
     if not os.path.isfile(ledger):
@@ -362,6 +458,14 @@ def main():
                 "changes": {k: {"old": v[0], "new": v[1]} for k, v in changes.items()},
             }, ensure_ascii=False, default=str))
         return
+
+    default_result = os.path.join(os.path.dirname(os.path.abspath(args.from_json)), "_结算结果.json")
+    try:
+        verify_write_provenance(ledger, os.path.abspath(args.from_json),
+                                args.result or default_result, args.review_dir, values)
+    except (OSError, ValueError, KeyError) as exc:
+        wb.close()
+        fail(f"回写凭证校验失败，未写入：{exc}")
 
     backup = backup_path(ledger)
     try:

@@ -2,7 +2,7 @@
 
 被 inspect_schema.py、apply_mapping.py 与 recon_engine.py 复用，保证三处对「规范字段」
 和「列匹配」的理解完全一致：
-- 主档六表的规范表头直接复用 make_master.SHEETS（单一事实来源，不复制表头）；
+- 主档七表的规范表头直接复用 make_master.SHEETS（单一事实来源，不复制表头）；
 - 三份导出按业务字段定义规范名与同义词，用于模糊匹配、置信度分级与映射建议；
 - 只读工具：sha256、JSON 读取、时间戳、Excel 懒加载读取器（.xlsx/.xlsm → openpyxl，
   .xls → xlrd，仅在真正读取时才 import 与打开文件）。

@@ -7,6 +7,9 @@ from openpyxl.worksheet.properties import PageSetupProperties
 
 import json
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from settlement_rules import RateBook, RuleViolation, calculate_consignment, jsonable, normalize_business_type
+
 # ==================== 可配置项（通过环境变量 RECON_CFG 传入 JSON）====================
 CFG = {}
 _CFG_ERR = ""
@@ -126,6 +129,7 @@ PA_TAX  = _PA.get("tax") or ""
 PB_NAME = _PB.get("name") or ""
 PB_TAX  = _PB.get("tax") or ""
 CONTRACT_NO = _CT.get("no") or ""
+STATEMENT_NO = str(CFG.get("statement_no") or "").strip()
 
 # 期间三项必填；格式化文案与派生量一律由日期推导，不留业务字面量
 P_START = _PD.get("start") or ""
@@ -162,7 +166,6 @@ except ValueError:
 
 P_CN    = _PD.get("period_cn") or f"{_d_end.year} 年 {_d_end.month} 月"
 ASOF_CN = _PD.get("asof_cn") or f"{_d_asof.year} 年 {_d_asof.month:02d} 月 {_d_asof.day:02d} 日"
-NEXT_M  = int(_PD.get("next_month") or _d_asof.month)
 _d_next = _d_end + _timedelta(days=1)
 _days_add = (_d_asof - _d_next).days + 1
 ADD_BACK = _days_add > 0
@@ -170,7 +173,6 @@ NEXT_LABEL = (f"{_d_next.month} 月 {_d_next.day}—{_d_asof.day} 日" if ADD_BA
               else f"{_d_next.month} 月 1—2 日")
 NEXT_FULL = (f"{_d_next.year} 年 {_d_next.month} 月 {_d_next.day}—{_d_asof.day} 日"
              if ADD_BACK else f"{_d_next.month} 月 1—2 日")
-PAY_CN  = _PD.get("pay_cn") or f"{_d_asof.year} 年 {_d_asof.month:02d} 月 05 日"
 PERIOD  = f"{_d_end.year:04d}{_d_end.month:02d}"
 
 BK_NAME = _BK.get("account_name") or PA_NAME
@@ -180,8 +182,13 @@ BK_BANK = _BK.get("bank_name") or ""
 # ---- 合同条款：以主档「合同」表为准；缺失时不得静默套用演示值 ----
 CT_METHOD = str(_CT.get("method") or "").strip()
 CT_BASIS  = str(_CT.get("basis") or "").strip()
+try:
+    BUSINESS_TYPE = normalize_business_type(CFG.get("business_type") or CT_METHOD)
+except RuleViolation as _e:
+    _cfg_fail(f"业务路由阻断[{_e.code}] {_e.message}")
+if BUSINESS_TYPE != "consignment":
+    _cfg_fail("月结买断必须使用 monthly_recon_engine.py，不得套用铺货代销公式")
 CT_METHOD_TXT = CT_METHOD or "（主档未登记，以合同为准）"
-CT_BASIS_TXT  = CT_BASIS or "（主档未登记，以合同为准）"
 if CT_METHOD and CT_BASIS:
     SETTLE_TERMS_TXT = f"结算方式{CT_METHOD}、结算基数{CT_BASIS}"
 elif CT_METHOD:
@@ -511,15 +518,37 @@ def _find_header(ws, keys, max_scan=6):
 
 
 def _col(headers, keys, default, label="", deny=()):
-    """按关键词找列；deny 中的词出现在表头时跳过该列（防「商品条码」被当成品名列）。"""
-    for i, h in enumerate(headers):
-        if h is None:
+    """先匹配完整表头，再用长关键词；同级多列命中即阻断，不按列序猜测。"""
+    def _header_text(value):
+        text = re.sub(r"\s+", "", str(value or ""))
+        return re.sub(r"[(（][^)）]*[)）]", "", text)
+
+    candidates = []
+    for i, header in enumerate(headers):
+        if header is None:
             continue
-        hs = str(h)
-        if deny and any(d in hs for d in deny):
+        raw = str(header)
+        if deny and any(d in raw for d in deny):
             continue
-        if any(k in hs for k in keys):
-            return i
+        text = _header_text(raw)
+        if text:
+            candidates.append((i, text))
+    for key in keys:
+        target = _header_text(key)
+        hits = [i for i, header in candidates if header == target]
+        if len(hits) > 1:
+            _bail(f"数据表表头「{key}」命中多列，无法唯一取数。实际表头：{headers}")
+        if hits:
+            return hits[0]
+    for key in keys:
+        target = _header_text(key)
+        if target in ("数量", "销量", "时间", "日期"):
+            continue  # 泛化业务词只接受完整表头，防止命中“发货数量／发货时间”
+        hits = [i for i, header in candidates if target in header]
+        if len(hits) > 1:
+            _bail(f"数据表中含「{key}」的列不唯一，已停止取数。实际表头：{headers}")
+        if hits:
+            return hits[0]
     if label:
         _bail(f"数据表未找到含「{'/'.join(keys)}」的列（{label}）。实际表头：{[str(h) for h in headers if h]}。"
               f"请核对导出格式，或在配置中调整源文件")
@@ -533,17 +562,15 @@ def _cell_of(row, idx):
 
 
 def _num_val(value, ctx):
-    """源单元格 → 数字。缺失=0；脏值（文本、全角、千分位以外符号）直接中止，不静默兜底。"""
-    if value is None:
-        return 0.0
+    """源单元格 → 数字。必需字段空白即阻断；只有明确填写的数字 0 才是零。"""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        _bail(f"{ctx} 为空。必需数量／金额缺失即阻断，不得按 0 猜算，请核对源表")
     if isinstance(value, bool):
         _bail(f"{ctx} 是布尔值（{value!r}），疑似表头/说明行混入数据区，请核对源表")
     if isinstance(value, (int, float)):
         f = float(value)
     else:
         s = str(value).strip().replace(",", "").replace("，", "")
-        if not s:
-            return 0.0
         try:
             f = float(s)
         except ValueError:
@@ -551,6 +578,11 @@ def _num_val(value, ctx):
     if f != f or f in (float("inf"), float("-inf")):
         _bail(f"{ctx} 的值「{value!r}」不是有限数字，请核对源表")
     return f
+
+
+def _qval(value, ctx):
+    """源数量 → 保留实数（4 位小数）。数量不得 int 取整：静默取整会改结算金额。"""
+    return round(_num_val(value, ctx), 4)
 
 
 def _read_matrix(path, sheet=None, role="jia"):
@@ -634,14 +666,12 @@ def _require(path):
 for _p in (_P_JIA, _P_OCT, _P_INV):
     _require(_p)
 
-# ---------- 甲方挂账（.xls / .xlsx，按表头关键词定位列；有映射时按映射）----------
+# ---------- 甲方 BIP 挂账：只读取数量，单价唯一权威源是合同价格政策 ----------
 _jia_mat = _read_matrix(_P_JIA, sheet=_src_entry("jia").get("sheet"), role="jia")
-_hr0, _h0 = _src_header_rows(_jia_mat, "jia", ["商品名称", "未结算数量", "未结算金额", "单价"])
+_hr0, _h0 = _src_header_rows(_jia_mat, "jia", ["商品名称", "未结算数量"])
 c_name = _src_col("jia", "name", _h0, ["商品名称", "商品名", "名称", "品名", "商品"], 0,
                       label="甲方挂账·品名列", deny=("条码", "编码", "编号", "代码"))
-c_price = _src_col("jia", "price", _h0, ["单价", "供货价"], 1, label="甲方挂账·单价列")
-c_amt = _src_col("jia", "amount", _h0, ["未结算金额", "金额"], 2, label="甲方挂账·金额列")
-c_qty = _src_col("jia", "qty", _h0, ["未结算数量", "数量"], 3, label="甲方挂账·数量列")
+c_qty = _src_col("jia", "qty", _h0, ["未结算数量", "数量", "现存量"], None, label="甲方挂账·数量列")
 c_init = _src_col("jia", "init", _h0, ["初始数量", "初始"], c_qty)
 # 新的甲方挂账表会带批次号 / 有效期 / 物料属性；缺列时按旧行为（正装、无批次）
 c_lot = _src_col("jia", "lot", _h0, ["批次号", "批次", "批号"], None)
@@ -730,10 +760,10 @@ for _ri, r in enumerate(_jia_mat[_hr0 + 1:], _hr0 + 2):
     _lot, _lot_exp = _split_lot(_cell_of(r, c_lot) if c_lot is not None else None)
     _exp = (_parse_day(_cell_of(r, c_exp)) if c_exp is not None else None) or _lot_exp
     _jia_raw.append(dict(name=nm,
-                         price=round(_num_val(_cell_of(r, c_price), f"甲方挂账第 {_ri} 行·单价"), 2),
-                         amt=round(_num_val(_cell_of(r, c_amt), f"甲方挂账第 {_ri} 行·未结算金额"), 2),
-                         qty=int(round(_num_val(_cell_of(r, c_qty), f"甲方挂账第 {_ri} 行·未结算数量"))),
-                         init=int(round(_num_val(_cell_of(r, c_init), f"甲方挂账第 {_ri} 行·初始数量"))),
+                         price=0.0,  # 仅占位；后续由合同价格表按日期赋值，不读 BIP 单价
+                         amt=0.0,    # BIP 金额不参与结算或恒等式
+                         qty=_qval(_cell_of(r, c_qty), f"甲方挂账第 {_ri} 行·未结算数量"),
+                         init=_qval(_cell_of(r, c_init), f"甲方挂账第 {_ri} 行·初始数量"),
                          code="" if c_code is None or _cell_of(r, c_code) is None
                               else str(_cell_of(r, c_code)).strip(),
                          lot=_lot,
@@ -818,8 +848,9 @@ for _ri, r in enumerate(ws_inv.iter_rows(min_row=_hr + 1, values_only=True), _hr
                     bar=_bar,
                     spec=_cell_of(r, k_spec) if _cell_of(r, k_spec) is not None else "",
                     cat=_cell_of(r, k_cat) if _cell_of(r, k_cat) is not None else "",
-                    qty=int(round(_num_val(_cell_of(r, k_qty), f"库存表第 {_ri} 行·库存数量"))),
-                    retail=_num_val(_retail, f"库存表第 {_ri} 行·销售价") if _retail is not None else 0.0,
+                    qty=_qval(_cell_of(r, k_qty), f"库存表第 {_ri} 行·库存数量"),
+                    retail=(_num_val(_retail, f"库存表第 {_ri} 行·销售价")
+                            if _retail is not None and str(_retail).strip() else 0.0),
                     brand=str(_brand).strip() if _brand is not None else ""))
 
 # 先按条码聚合（同一商品被拆成两行、或换名不换码，都能合并）
@@ -882,7 +913,7 @@ for _ri, r in enumerate((ws_nov.iter_rows(min_row=_hr2 + 1, values_only=True) if
     if not _bar:
         _nov_skip.append(str(_cell_of(r, n_name)).strip())
         continue
-    nov[_bar] += int(round(_q))
+    nov[_bar] += round(_q, 4)
 if _nov_skip:
     print(f"⚠ 次月销售表有 {len(_nov_skip)} 行无条码且品名无法匹配库存，已跳过（如："
           f"{'、'.join(_nov_skip[:5])}）；请核对是否影响回加")
@@ -909,16 +940,52 @@ o_unit = _src_col("sales", "unit", _hoct, ["单位"], 6)
 o_num = _src_col("sales", "qty", _hoct, ["销售数量", "数量", "销量"], 7, label="销售流水·数量列")
 o_brand = _src_col("sales", "brand", _hoct, ["品牌"], 8)
 o_kind = _src_col("sales", "kind", _hoct, ["赠品", "试用", "物料属性", "物料类型"], None)
+o_txn = _src_col("sales", "txn_type", _hoct, ["业务类型", "单据类型", "销售类型"], None)
+o_orig = _src_col("sales", "original_sale_id", _hoct, ["原销售流水号", "原销售单号"], None)
+o_orig_price = _src_col("sales", "original_unit_price", _hoct, ["原销售单价", "原结算价"], None)
+o_orig_th = _src_col("sales", "original_decal_charged", _hoct, ["原销售已计提贴花", "原销售贴花已计提"], None)
+o_orig_th_std = _src_col("sales", "original_decal_standard", _hoct, ["原销售贴花标准", "原贴花标准"], None)
 _sales_use = defaultdict(int)
+_AGGREGATE_LABELS = {"合计", "小计", "总计"}
+_aggregate_rows_skipped = 0
+
+
+def _optional_bool(value, label):
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in ("1", "true", "是", "已计提", "有"):
+        return True
+    if text in ("0", "false", "否", "未计提", "无"):
+        return False
+    _bail(f"{label}只能填 是／否，收到：{value!r}")
+
 
 detail = []
+sales_rule_lines = []
 oct_qty, oct_store = defaultdict(int), defaultdict(lambda: defaultdict(int))
 oct_name, oct_spec, oct_unit = {}, {}, {}
 oct_by_name = {}
 for _ri, r in enumerate(ws_oct.iter_rows(min_row=_hr3 + 1, values_only=True), _hr3 + 1):
-    if not r or not _cell_of(r, o_id) or not _cell_of(r, o_name):
+    if not r or not any(value is not None and str(value).strip() for value in r):
         continue
-    q = int(round(_num_val(_cell_of(r, o_num), f"销售流水第 {_ri} 行·销售数量")))
+    # 与挂账、库存表一致：显式聚合行豁免并留痕；其余缺关键字段的业务行必须阻断。
+    _cells = {norm(value) for value in r if value is not None and str(value).strip()}
+    if any(value in _AGGREGATE_LABELS for value in _cells):
+        _aggregate_rows_skipped += 1
+        continue
+    if _cell_of(r, o_id) is None or not str(_cell_of(r, o_id)).strip():
+        _bail(f"销售流水第 {_ri} 行缺少流水号；有效业务行不得静默跳过，请补齐后重新对账")
+    if _cell_of(r, o_name) is None or not str(_cell_of(r, o_name)).strip():
+        _bail(f"销售流水第 {_ri} 行缺少商品名称；有效业务行不得静默跳过，请补齐后重新对账")
+    raw_q = _qval(_cell_of(r, o_num), f"销售流水第 {_ri} 行·销售数量")
+    txn_text = str(_cell_of(r, o_txn) or "销售").strip() if o_txn is not None else "销售"
+    txn_kind = "return" if txn_text in ("退货", "冲销", "return") else "sale"
+    if txn_kind == "sale" and txn_text not in ("销售", "动销", "sale"):
+        _bail(f"销售流水第 {_ri} 行业务类型无法识别：{txn_text!r}")
+    q = -abs(raw_q) if txn_kind == "return" else raw_q
     _bar = _cell_of(r, o_bar)
     _bar = "" if _bar is None else str(_bar).strip()
     if _bar.endswith(".0") and _bar[:-2].isdigit():
@@ -930,10 +997,23 @@ for _ri, r in enumerate(ws_oct.iter_rows(min_row=_hr3 + 1, values_only=True), _h
     _spec = _cell_of(r, o_spec)
     _unit = _cell_of(r, o_unit)
     _brand = _cell_of(r, o_brand)
+    _original_id = str(_cell_of(r, o_orig) or "").strip() if o_orig is not None else ""
+    _rule_line = {
+        "id": str(_cell_of(r, o_id)).strip(), "barcode": _bar, "date": _cell_of(r, o_time),
+        "quantity": abs(raw_q) if txn_kind == "return" else raw_q, "kind": txn_kind,
+        "original_sale_id": _original_id,
+        "original_decal_charged": _optional_bool(_cell_of(r, o_orig_th) if o_orig_th is not None else None,
+                                                f"销售流水第 {_ri} 行·原销售已计提贴花"),
+    }
+    if o_orig_price is not None and _cell_of(r, o_orig_price) not in (None, ""):
+        _rule_line["original_unit_price"] = _num_val(_cell_of(r, o_orig_price), f"销售流水第 {_ri} 行·原销售单价")
+    if o_orig_th_std is not None and _cell_of(r, o_orig_th_std) not in (None, ""):
+        _rule_line["original_decal_standard"] = _num_val(_cell_of(r, o_orig_th_std), f"销售流水第 {_ri} 行·原销售贴花标准")
+    sales_rule_lines.append(_rule_line)
     detail.append([_cell_of(r, o_id), _cell_of(r, o_time), _store, _cell_of(r, o_name),
                    _bar, _spec if _spec is not None else "",
                    _unit if _unit is not None else "", q,
-                   _brand if _brand is not None else ""])
+                   _brand if _brand is not None else "", txn_text, _original_id, None, None, ""])
     oct_qty[_bar] += q
     oct_store[_bar][_store] += q
     oct_name[_bar] = str(_cell_of(r, o_name)).strip()
@@ -944,6 +1024,8 @@ for _ri, r in enumerate(ws_oct.iter_rows(min_row=_hr3 + 1, values_only=True), _h
         _kv = _cell_of(r, o_kind)
         if _kv and any(_w in str(_kv) for _w in ("赠品", "试用", "小样", "配赠", "促销")):
             _sales_use[_bar] += q
+if _aggregate_rows_skipped:
+    print(f"⚠ 销售流水豁免 {_aggregate_rows_skipped} 行合计／小计／总计聚合行，不计入业务明细")
 
 # ---- 数据覆盖披露（动态）：有记录日期区间 + 期间内缺哪几天 ----
 _dates_seen = sorted({_iso_day(d[1]) for d in detail if _iso_day(d[1])})
@@ -968,47 +1050,52 @@ STORE_ORDER += [k for v in oct_store.values() for k in v if k not in STORE_ORDER
 STORE_ORDER = list(dict.fromkeys(STORE_ORDER))
 print(f"识别：库存表「{inv_sheet_name}」/ 次月表「{ws_nov.title if ws_nov is not None else '（无需回加）'}」/ 销售表「{ws_oct.title}」")
 
-# ---------- 与主档价格表交叉校验（仅提示，不改数）----------
-_mp = CFG.get("master_path")
-if _mp and os.path.exists(_mp):
-    try:
-        _wb = openpyxl.load_workbook(_mp, data_only=True)
-        _price_sheet = _master_sheet("价格")
-        if _price_sheet in _wb.sheetnames:
-            _ws = _wb[_price_sheet]
-            _h = [c.value for c in _ws[1]]
-            def _c(k, d=0):
-                for i, x in enumerate(_h):
-                    if x and k in str(x):
-                        return i
-                return d
-            pi, pp, ps, pe = _c("条码"), _c("供货价"), _c("生效起"), _c("生效止")
-            _rows = [r for r in _ws.iter_rows(min_row=2, values_only=True) if r and r[pi]]
-            _bybar = {}
-            for r in _rows:
-                _bybar.setdefault(str(r[pi]).strip(), []).append(r)
-            _mis = []
-            for x in jia:
-                kb = oct_by_name.get(norm(x["name"]), "")
-                if not kb or kb not in _bybar:
-                    continue
-                hit = None
-                for r in _bybar[kb]:
-                    s0 = str(r[ps])[:10] if r[ps] else ""
-                    s1 = str(r[pe])[:10] if r[pe] else ""
-                    if (not s0 or s0 <= P_END) and (not s1 or s1 >= P_END):
-                        hit = r; break
-                if hit is None:
-                    continue
-                mp = float(hit[pp] or 0)
-                if abs(mp - x["price"]) > 0.005:
-                    _mis.append((x["name"], x["price"], mp))
-            if _mis:
-                print("⚠ 挂账单单价与主档价格表不一致（本期口径以挂账单为准，请人工确认）：")
-                for n, a1, a2 in _mis:
-                    print(f"    - {n}：挂账 {a1:.2f} / 主档 {a2:.2f}")
-    except Exception as _e:
-        print(f"⚠ 主档价格校验跳过：{_e}")
+# ---------- 合同价格与贴花：唯一取价来源，SCD2 区间错误直接阻断 ----------
+def _load_rate_book(wb, sheet_name, value_names, kind, required):
+    from settlement_rules import rate_value_column
+
+    actual = _master_sheet(sheet_name)
+    if actual not in wb.sheetnames:
+        if required:
+            _bail(f"主档缺少「{sheet_name}」表，无法从合同政策取价")
+        return None
+    ws = wb[actual]
+    headers = [str(c.value).strip() if c.value is not None else "" for c in ws[1]]
+    def col(names, required_col=True):
+        for name in names:
+            for i, header in enumerate(headers):
+                if name in header:
+                    return i
+        if required_col:
+            _bail(f"主档「{sheet_name}」表缺少列：{'／'.join(names)}")
+        return None
+    ci_bar = col(("商品条码", "条码"))
+    ci_value = rate_value_column(headers, value_names, actual)
+    ci_start = col(("生效起",))
+    ci_end = col(("生效止",), False)
+    ci_source = col(("依据文件",), False)
+    rate_rows = []
+    for values in ws.iter_rows(min_row=2, values_only=True):
+        if not values or ci_bar >= len(values) or values[ci_bar] in (None, ""):
+            continue
+        rate_rows.append({
+            "barcode": values[ci_bar], "value": values[ci_value], "start": values[ci_start],
+            "end": values[ci_end] if ci_end is not None else None,
+            "source": values[ci_source] if ci_source is not None else "",
+        })
+    if required and not rate_rows:
+        _bail(f"主档「{sheet_name}」表没有任何有效记录")
+    return RateBook(rate_rows, kind=kind)
+
+try:
+    _rate_wb = openpyxl.load_workbook(CFG["master_path"], data_only=True)
+    PRICE_BOOK = _load_rate_book(_rate_wb, "价格", ("供货价", "结算价", "合同价"), "合同价", True)
+    DECAL_BOOK = _load_rate_book(_rate_wb, "贴花", ("贴花标准",), "贴花标准", False)
+    _rate_wb.close()
+except RuleViolation as _e:
+    _bail(f"价格政策阻断[{_e.code}] {_e.message}")
+except Exception as _e:
+    _bail(f"主档价格／贴花读取失败：{_e}")
 
 # ---------- 读主档 SKU：别名反查 + 结算属性 + 条码全集 ----------
 MS_BAR, MS_ALIAS, MS_SETTLE, MS_NAME = {}, {}, set(), {}
@@ -1162,7 +1249,7 @@ if not BATCH and _P_BATCH and os.path.exists(_P_BATCH):
         BATCH.append(dict(name=str(_nm).strip(), bar=_bb,
                           lot=_lot_v or "（未标批次）",
                           exp=_exp,
-                          qty=int(round(_num_val(_cell_of(_r, q_qty), f"批次表第 {_ri} 行·数量"))),
+                          qty=_qval(_cell_of(_r, q_qty), f"批次表第 {_ri} 行·数量"),
                           init=0, price=0.0))
     BATCH_SRC = "甲方批次效期表：" + os.path.basename(_P_BATCH)
     if _q_bad:
@@ -1195,7 +1282,7 @@ if _P_USE and os.path.exists(_P_USE):
         _ub = "" if _ub is None else str(_ub).strip()
         if _ub.endswith(".0") and _ub[:-2].isdigit():
             _ub = _ub[:-2]
-        _uq = int(round(_num_val(_cell_of(_r, u_qty), f"使用表第 {_ri} 行·数量")))
+        _uq = _qval(_cell_of(_r, u_qty), f"使用表第 {_ri} 行·数量")
         _uk = _ub or norm(_cell_of(_r, u_name))
         PROMO_USE[_uk] = PROMO_USE.get(_uk, 0) + _uq
     PROMO_USE_SRC = "乙方使用表：" + os.path.basename(_P_USE)
@@ -1223,72 +1310,154 @@ if MS_BAR:
             _uncls.append((x["name"], x["bar"] or "（无条码）", "主档未建档"))
         elif MS_BAR[x["bar"]]["attr"] not in ("结算类", "非结算类"):
             _uncls.append((x["name"], x["bar"], MS_BAR[x["bar"]]["attr"] or "空"))
+    # 销售独有条码也必须在过滤前检查；未建档不等于非结算，绝不静默漏算。
+    for line in sales_rule_lines:
+        barcode = line["barcode"]
+        attribute = MS_BAR.get(barcode, {}).get("attr")
+        if attribute not in ("结算类", "非结算类"):
+            reason = "主档未建档" if barcode not in MS_BAR else (attribute or "空")
+            _uncls.append((oct_name.get(barcode) or "销售流水商品", barcode or "（无条码）", reason))
 if _uncls:
     for _n, _b, _a in _uncls[:12]:
         sys.stderr.write(f"    - {_n}｜{_b}｜结算属性：{_a}\n")
     _bail(f"有 {len(_uncls)} 个商品在主档中未明确「结算类/非结算类」。"
           f"空值不会被默认成结算类，请先补主档 SKU 表再对账")
 
+opening_by_bar, inventory_by_bar = {}, {}
+_source_settled_q0 = 0
 for x in jia:
-    k = norm(x["name"]); iv, _how = resolve_sku(x["name"], x.get("code", ""))
+    k = norm(x["name"])
+    _source_bar = (_bar_of(x.get("code", "")) or oct_by_name.get(k)
+                   or MS_ALIAS.get(k) or MS_NAME.get(k) or "")
+    # 原始 jia／inv／detail 仍用于来源展示；这里构造的字典与 rows 仅供结算规则使用。
+    if MS_BAR.get(_source_bar, {}).get("attr") == "非结算类":
+        continue
+    iv, _how = resolve_sku(x["name"], x.get("code", ""))
     if iv is not None and _how in ("条码", "物料编码") and norm(iv["name"]) != k:
         print(f"⚠ 挂账「{x['name']}」与库存「{iv['name']}」品名不同，已按条码匹配")
     if iv is None:
         _missing.append(x["name"])
-        _b = oct_by_name.get(k) or MS_ALIAS.get(k) or ""
+        _b = oct_by_name.get(k) or MS_ALIAS.get(k) or MS_NAME.get(k) or ""
         iv = dict(name=x["name"], bar=_b, spec="", cat="", qty=0, retail=0.0, _absent=True)
     bar = iv["bar"]
-    q10 = oct_qty.get(bar, 0); q11 = nov.get(bar, 0)
-    theo = x["qty"] - q10                 # 甲方账面 10/31 结存
-    adj  = iv["qty"] + q11                # 乙方库存回加导出日前已销
-    diff = adj - theo
+    if not bar:
+        _bail(f"挂账商品「{x['name']}」无法唯一定位条码，请先补主档或条码映射")
+    if bar in opening_by_bar:
+        _bail(f"挂账表中同一条码出现多组结算行：{bar}；请先核对，避免动销双算")
+    opening_by_bar[bar] = x["qty"]
+    _source_settled_q0 += x["qty"]
+    if not iv.get("_absent"):
+        inventory_by_bar[bar] = iv["qty"]
     _note = ""
-    if not _note and not iv.get("_absent") and norm(iv["name"]) != norm(x["name"]):
+    if not iv.get("_absent") and norm(iv["name"]) != k:
         _note = f"乙方系统品名：{iv['name']}"
-    if not _note and iv.get("_absent"):
-        _note = "乙方本期未提供该 SKU 库存，不计入差异"
+    if iv.get("_absent"):
+        _note = "乙方本期未提供该 SKU 库存，不计算盈亏"
     _ms = MS_BAR.get(bar, {})
     rows.append(dict(name=x["name"], bar=bar,
                      spec=(_ms.get("spec") or iv["spec"]),
                      unit=(_ms.get("unit") or oct_unit.get(bar) or "—"),
-                     price=x["price"], retail=iv["retail"], q0=x["qty"], q10=q10, q11=q11,
-                     theo=theo, act=iv["qty"], adj=adj, diff=diff,
-                     diff_amt=round(diff * x["price"], 2),
-                     settle=round(q10 * x["price"], 2),
-                     init=x["init"], src_amt=x["amt"],
+                     price=0.0, retail=iv["retail"], q0=x["qty"], q10=0, q11=nov.get(bar, 0),
+                     theo=0, act=iv["qty"], adj=0, diff=0, diff_amt=0.0, settle=0.0,
+                     init=x["init"],
                      absent=bool(iv.get("_absent")), note=_note))
+
+_rule_sales = [line for line in sales_rule_lines
+               if MS_BAR.get(line["barcode"], {}).get("attr") == "结算类"]
+_rule_ids = [str(line["id"]) for line in _rule_sales]
+if len(_rule_ids) != len(set(_rule_ids)):
+    _bail("销售／退货流水号必须全局唯一，才能追溯原销售价和贴花；请修正重复流水号")
+_unknown_rule_bars = sorted({line["barcode"] for line in _rule_sales} - set(opening_by_bar))
+if _unknown_rule_bars:
+    _bail("以下结算条码有销售／退货流水，但不在本次 BIP 期初导出中："
+          + "、".join(_unknown_rule_bars)
+          + "。请在 BIP 导出中补对应行（期初为 0 也要明确列出），不猜测期初数量")
+try:
+    for _bar in sorted(set(opening_by_bar) | {line["barcode"] for line in _rule_sales}):
+        PRICE_BOOK.validate_period(_bar, P_START, P_END)
+    RULE_RESULT = calculate_consignment(
+        period_start=P_START, period_end=P_END,
+        opening=opening_by_bar, inventory=inventory_by_bar,
+        addback={bar: nov.get(bar, 0) for bar in opening_by_bar},
+        sales=_rule_sales, prices=PRICE_BOOK, decals=DECAL_BOOK,
+        original_sales=CFG.get("original_sales") or [],
+        variance_authorization=CFG.get("variance_authorization"),
+    )
+except RuleViolation as _e:
+    _bail(f"结算规则阻断[{_e.code}] {_e.message}")
+
+_rule_sku = {item["barcode"]: item for item in RULE_RESULT["quantity_reconciliation"]}
+_amount_by_bar = defaultdict(float)
+for _line in RULE_RESULT["priced_lines"]:
+    _amount_by_bar[_line["barcode"]] += float(_line["amount"])
+_priced_by_id = {str(line["id"]): line for line in RULE_RESULT["priced_lines"]}
+for _d in detail:
+    _priced = _priced_by_id.get(str(_d[0]))
+    if _priced and MS_BAR.get(str(_d[4]), {}).get("attr") == "结算类":
+        _d[11] = float(_priced["unit_price"])
+        _d[12] = float(_priced["amount"])
+        _d[13] = _priced["price_evidence"]
+
+def _qty(value):
+    """数量统一精度：规则层返回 Decimal，保留实数（如 9.5），不得 int 截断。"""
+    if value is None:
+        return None
+    return round(float(value), 4)
+
+
+def _qfmt(value):
+    """数量显示：整数不带小数点（3），实数保留必要位（9.5），不出现 3.0。"""
+    if value is None:
+        return "0"
+    number = float(value)
+    if number == int(number):
+        return str(int(number))
+    return ("%f" % number).rstrip("0").rstrip(".")
+
+
+def _qfmt_s(value):
+    """带符号数量显示：+3／-3／+9.5。"""
+    number = float(value or 0)
+    sign = "+" if number > 0 else ""
+    return sign + _qfmt(number)
+
+
+for r in rows:
+    _rule = _rule_sku[r["bar"]]
+    r["price"] = float(PRICE_BOOK.rate_on(r["bar"], P_END).value)
+    r["q10"] = _qty(_rule["net_sales_qty"])
+    r["theo"] = _qty(_rule["theoretical_end_qty"])
+    r["adj"] = _qty(_rule["adjusted_actual_qty"]) if _rule["adjusted_actual_qty"] is not None else 0
+    r["diff"] = _qty(_rule["variance_qty"]) if _rule["variance_qty"] is not None else 0
+    r["diff_amt"] = float(_rule["variance_display_amount"] or 0)
+    r["settle"] = round(_amount_by_bar.get(r["bar"], 0.0), 2)
+
 T = dict(q0=0, q10=0, q11=0, theo=0, act=0, adj=0, diff=0, diff_amt=0, settle=0)
 for r in rows:
     for kk in T:
         if r.get("absent") and kk in ("act", "adj", "diff", "diff_amt", "q11"):
-            continue          # 未提供库存：不参与库存类合计，避免虚增短缺
+            continue
         T[kk] += r[kk]
 T = {k: round(v, 2) for k, v in T.items()}
 
-OPEN_VAL = round(sum(r["q0"] * r["price"] for r in rows), 2)
+OPEN_VAL = round(sum(r["q0"] * r["price"] for r in rows), 2)  # 期末合同价参考估值，非 BIP 金额
+GROSS_SALES = float(RULE_RESULT["gross_sales_amount"])
+RETURN_AMOUNT = float(RULE_RESULT["return_amount"])
+VARIANCE_INCLUDED = bool(RULE_RESULT["variance_included"])
+SETTLEMENT_TOTAL = float(RULE_RESULT["settlement_amount"])
 
 _PART.update(q0=T.get("q0"), open=OPEN_VAL, q10=T.get("q10"),
              settle=T.get("settle"), diff=T.get("diff"), diff_amt=T.get("diff_amt"))
-NOV_VAL  = round(sum(r["q11"] * r["price"] for r in rows), 2)
-ACT_VAL  = round(sum(r["act"] * r["price"] for r in rows if not r.get("absent")), 2)
-ADJ_VAL  = round(sum(r["adj"] * r["price"] for r in rows if not r.get("absent")), 2)
-THEO_VAL = round(sum(r["theo"] * r["price"] for r in rows), 2)
-BOOK_END = round(OPEN_VAL - T["settle"], 2)
-SETTLE_ALL = round(T["settle"] + abs(T["diff_amt"]), 2)
-DIFF_RATE  = T["diff"] / abs(T["theo"]) if T["theo"] else 0
+DIFF_RATE = T["diff"] / abs(T["theo"]) if T["theo"] else 0
 
-# ---- 已提供库存子集：结转链与自检只在该子集内闭合，未提供 SKU 单列披露 ----
 _prov = [r for r in rows if not r.get("absent")]
-OPEN_VAL_P = round(sum(r["q0"] * r["price"] for r in _prov), 2)
-SETTLE_P   = round(sum(r["settle"] for r in _prov), 2)
-THEO_VAL_P = round(sum(r["theo"] * r["price"] for r in _prov), 2)
-NOV_VAL_P  = round(sum(r["q11"] * r["price"] for r in _prov), 2)
-BOOK_END_P = round(OPEN_VAL_P - SETTLE_P, 2)
-THEO_Q_P   = sum(r["theo"] for r in _prov)
-Q0_P       = sum(r["q0"] for r in _prov)
-Q10_P      = sum(r["q10"] for r in _prov)
-_absent_end = round(sum(r["q0"] * r["price"] - r["settle"] - r["q11"] * r["price"]
-                        for r in rows if r.get("absent")), 2)
+THEO_Q_P = sum(r["theo"] for r in _prov)
+Q0_P = sum(r["q0"] for r in _prov)
+Q10_P = sum(r["q10"] for r in _prov)
+for _batch in BATCH:
+    _matched = next((r for r in rows if r["bar"] == _batch.get("bar")), None)
+    if _matched:
+        _batch["price"] = _matched["price"]
 
 # ---------- 效期：期末批次结存（本期动销按有效期升序 FIFO 扣减）----------
 _EXP_BASE = _date.fromisoformat(str(P_END)[:10])
@@ -1354,117 +1523,70 @@ for _key, _lst in _by_bar_lot.items():
         EXP_RECON.append((_key, _left, _theo, "批次结存≠账面期末结存"))
 _exp_diff_qty = sum(abs(_l - (_t or 0)) for _, _l, _t, _ in EXP_RECON)
 
-if T["act"] == 0:
-    _bail("乙方库存表解析结果为 0 件，疑似表名或列位不匹配")
-if T["theo"] and abs(T["diff"]) / abs(T["theo"]) > 0.30 and not CFG.get("allow_large_diff"):
-    _bail(f"差异 {T['diff']} 件，占理论结存 {abs(DIFF_RATE)*100:.1f}%，超过 30% 阈值；多为源文件放错期间或表结构变化")
-
 if _missing:
-    print(f"⚠ 以下 {len(_missing)} 个 SKU 乙方本期未提供库存数据，不参与差异计算（非按 0 计）：")
+    print(f"⚠ 以下 {len(_missing)} 个 SKU 乙方本期未提供库存数据，不参与盈亏计算（非按 0 计）：")
     for _m in _missing:
         print(f"    - {_m}")
 
+
 def _check_identity(label, a, b):
-    """恒等式用显式中止而非 assert（python -O 下 assert 会被移除，自检静默失效）。"""
+    """数量与各项金额独立复算；不再用调价价差倒挤货值。"""
     if abs(a - b) > 0.01:
         _bail(f"{label}：{a:,.2f} ≠ {b:,.2f}")
 
 
-_check_identity("期末账面货值 ≠ 理论结存货值（全量）", BOOK_END, THEO_VAL)
-_check_identity("期末账面货值（可核对子集） ≠ 可核对理论结存", BOOK_END_P, THEO_VAL_P)
-_check_identity("期末账面货值（可核对子集） － 调整后结存货值 ＋ 差异金额 ≠ 0",
-                BOOK_END_P - ADJ_VAL + T["diff_amt"], 0.0)
-_check_identity("可核对子集：调整后结存货值 ≠ 库存货值 ＋ 回加货值",
-                ADJ_VAL - ACT_VAL, NOV_VAL_P)
-if T["q0"] != T["q10"] + T["theo"]:
-    _bail(f"数量恒等式不成立：期初 {T['q0']} ≠ 动销 {T['q10']} ＋ 理论结存 {T['theo']}")
-if T["adj"] != T["act"] + T["q11"]:
-    _bail(f"数量恒等式不成立：调整后结存 {T['adj']} ≠ 库存 {T['act']} ＋ 回加 {T['q11']}")
-if T["diff"] != T["adj"] - THEO_Q_P:
-    _bail(f"数量恒等式不成立：差异 {T['diff']} ≠ 调整后结存 {T['adj']} － 可核对理论结存 {THEO_Q_P}")
+if abs(T["q0"] - (T["q10"] + T["theo"])) > 0.01:
+    _bail(f"数量勾稽不成立：BIP 期初 {_qfmt(T['q0'])} ≠ 本期净动销 {_qfmt(T['q10'])} ＋ 理论结存 {_qfmt(T['theo'])}")
+if abs(T["adj"] - (T["act"] + T["q11"])) > 0.01:
+    _bail(f"数量勾稽不成立：实际结存 {T['adj']} ≠ 库存 {T['act']} ＋ 回加 {T['q11']}")
+if abs(T["diff"] - (THEO_Q_P - T["adj"])) > 0.01:
+    _bail(f"数量勾稽不成立：盈亏 {_qfmt(T['diff'])} ≠ 可核对理论结存 {_qfmt(THEO_Q_P)} － 实际结存 {_qfmt(T['adj'])}")
+_check_identity("逐笔销售／退货货款复算", T["settle"], float(RULE_RESULT["sales_settlement_amount"]))
+_check_identity("盈亏列示金额复算", T["diff_amt"], float(RULE_RESULT["variance_display_amount"]))
+_expected_total = T["settle"] + (T["diff_amt"] if VARIANCE_INCLUDED else 0.0)
+_check_identity("本期结算总额复算", SETTLEMENT_TOTAL, _expected_total)
 
-N_PAY = sum(1 for r in rows if r["q0"] > 0 and not r.get("absent"))
-diff_rows   = [r for r in rows if not r.get("absent") and r["diff"] != 0]
-ok_rows     = [r for r in rows if not r.get("absent") and r["diff"] == 0 and r["q0"] > 0]
-zero_rows   = [r for r in rows if not r.get("absent") and r["q0"] == 0]
+diff_rows   = [r for r in rows if not r.get("absent") and abs(r["diff"]) > 1e-9]
+ok_rows     = [r for r in rows if not r.get("absent") and abs(r["diff"]) <= 1e-9 and r["q0"] > 0]
+zero_rows   = [r for r in rows if not r.get("absent") and abs(r["q0"]) <= 1e-9]
 absent_rows = [r for r in rows if r.get("absent")]
 _jia_bars_all = {r["bar"] for r in rows if r["bar"]}
-_jia_names_all = {norm(y["name"]) for y in jia}
+_jia_names_all = {norm(r["name"]) for r in rows}
 extra     = [x for x in inv
              if not ((x["bar"] and x["bar"] in _jia_bars_all) or norm(x["name"]) in _jia_names_all)]
 EXTRA_Q   = sum(x["qty"] for x in extra)
 
-# ==================== 贴花（销售奖励）模块 ====================
-# 判据与主档一致：条码为主键、按生效区间取当期标准；缺失即阻断，不默认为 0
-TH_ROWS, TH_TOTAL, TH_ACTIVE = [], 0.0, False
-_mp3 = CFG.get("master_path")
-_th_map, _th_dup = {}, []
-if _mp3 and os.path.exists(_mp3):
-    if "贴花" not in openpyxl.load_workbook(_mp3, read_only=True).sheetnames:
-        print("贴花：主档无「贴花」表，本期不计算销售奖励（如需计算请先建表）")
-    else:
-        TH_ACTIVE = True
-        try:
-            _wst = openpyxl.load_workbook(_mp3, data_only=True)["贴花"]
-        except Exception as _e:
-            _bail(f"主档「贴花」表无法读取：{_e}")
-        _ht = [c.value for c in _wst[1]]
-        def _ct(k, d=None):
-            for i, x in enumerate(_ht):
-                if x and k in str(x):
-                    return i
-            return d
-        t_bar, t_std = _ct("条码", 0), _ct("贴花标准", 2)
-        t_from, t_to = _ct("生效起", 3), _ct("生效止", 4)
-        _p_end = str(P_END)[:10]
-        for _r in _wst.iter_rows(min_row=2, values_only=True):
-            if not _r or not _r[t_bar]:
-                continue
-            _s0 = str(_r[t_from])[:10] if _r[t_from] else ""
-            _s1 = str(_r[t_to])[:10] if _r[t_to] else ""
-            if (_s0 and _s0 > _p_end) or (_s1 and _s1 < _p_end):
-                continue
-            _bk = str(_r[t_bar]).strip()
-            try:
-                _std = float(_r[t_std])
-            except (TypeError, ValueError):
-                _bail(f"贴花表条码 {_bk} 的「贴花标准」不是数字（收到：{_r[t_std]!r}）。"
-                      f"脏值不会被默认为 0，请修正主档")
-            if _std < 0:
-                _bail(f"贴花表条码 {_bk} 的贴花标准为负数（{_std}），请核对")
-            if _bk in _th_map:
-                _th_dup.append((_bk, _th_map[_bk], _std))
-            else:
-                _th_map[_bk] = _std
-        # SCD2 区间重叠：同条码多条命中 → 阻断（不同标准取行序是静默错误）
-        if _th_dup:
-            for _bk, _a, _b2 in _th_dup[:6]:
-                sys.stderr.write(f"    - 条码 {_bk}：命中 {_a} 与 {_b2}\n")
-            _bail(f"贴花表有 {len(_th_dup)} 个条码在期间 {P_END} 命中多条生效记录（区间重叠）。"
-                  f"请修正生效起止，保证同一时点每条码仅一条有效记录")
-        # 每个 q10>0 的 SKU 必须有当期有效贴花记录（显式 0 也算）
-        _th_miss = [r["name"] for r in rows if r["q10"] > 0 and r["bar"] not in _th_map]
-        if _th_miss:
-            for _n in _th_miss[:10]:
-                sys.stderr.write(f"    - {_n}\n")
-            _bail(f"贴花表缺少 {len(_th_miss)} 个本期动销 SKU 的有效记录（期间 {P_END}）。"
-                  f"缺失不会被默认为 0，请先补主档「贴花」表")
-        for r in rows:
-            if r["q10"] > 0:
-                std = _th_map[r["bar"]]
-                TH_ROWS.append(dict(name=r["name"], bar=r["bar"], qty=r["q10"],
-                                    std=std, amt=round(r["q10"] * std, 2)))
-        TH_TOTAL = round(sum(x["amt"] for x in TH_ROWS), 2)
-        _th_chk = sum(r["q10"] * _th_map[r["bar"]] for r in rows if r["q10"] > 0)
-        if abs(_th_chk - TH_TOTAL) > 0.005:
-            _bail(f"贴花合计复算不一致：{TH_TOTAL} ≠ {_th_chk:.2f}")
+# ==================== 贴花：正常销售与退货冲减逐笔计算 ====================
+TH_ROWS, TH_ACTIVE = [], DECAL_BOOK is not None
+TH_TOTAL = float(RULE_RESULT["decal_amount"])
+_th_by_bar = {}
+for _line in RULE_RESULT["priced_lines"]:
+    if DECAL_BOOK is None:
+        break
+    _bar = _line["barcode"]
+    _item = _th_by_bar.setdefault(_bar, {"qty": 0, "amt": 0.0, "standards": set()})
+    _item["qty"] += round(float(_line["quantity"]), 4)
+    _item["amt"] += float(_line["decal_amount"])
+    if _line.get("decal_standard") is not None:
+        _item["standards"].add(float(_line["decal_standard"]))
+for r in rows:
+    _item = _th_by_bar.get(r["bar"])
+    if not _item or (not _item["qty"] and abs(_item["amt"]) < 0.005):
+        continue
+    _standards = _item["standards"]
+    TH_ROWS.append(dict(name=r["name"], bar=r["bar"], qty=_item["qty"],
+                        std=next(iter(_standards)) if len(_standards) == 1 else None,
+                        mixed=len(_standards) > 1, amt=round(_item["amt"], 2)))
+_check_identity("贴花逐笔独立复算", TH_TOTAL, sum(x["amt"] for x in TH_ROWS))
 if TH_ACTIVE:
-    print(f"贴花：{len(TH_ROWS)} 个动销 SKU，合计 {TH_TOTAL:,.2f} 元（标准取自主档贴花表期间 {P_END} 生效版）")
+    print(f"贴花：{len(TH_ROWS)} 个动销 SKU，合计 {TH_TOTAL:,.2f} 元（正常销售取 {P_END} 标准，退货按原销售标准）")
+else:
+    print("贴花：主档无「贴花」表，本期不计算销售奖励")
 print(f"输入目录：{BASE}")
 print(f"源文件：{F_JIA} / {F_OCT} / {F_INV}")
 print(f"输出文件：{OUT}")
-print(f"期初 {T['q0']}件/{OPEN_VAL} | 10月结算 {T['q10']}件/{T['settle']} | 11月 {T['q11']}件/{NOV_VAL}")
-print(f"理论结存 {T['theo']}件/{THEO_VAL} | 实盘 {T['act']}件/{ACT_VAL} + 11月 = 调整后 {T['adj']}件/{ADJ_VAL}")
+print(f"BIP 期初 {_qfmt(T['q0'])} 件 | 本期净动销 {_qfmt(T['q10'])} 件／流水货款 {T['settle']:,.2f} 元 | 回加 {_qfmt(T['q11'])} 件")
+print(f"理论结存 {_qfmt(T['theo'])} 件 | 库存导出 {_qfmt(T['act'])} 件＋回加＝实际结存 {_qfmt(T['adj'])} 件 | 盈亏 {_qfmt(T['diff'])} 件／{T['diff_amt']:,.2f} 元")
 if MS_BAR:
     _inv_bars = {x["bar"] for x in inv if x["bar"]}
     _unreg = _inv_bars - set(MS_BAR)
@@ -1497,7 +1619,7 @@ if not ADD_BACK:
             for _r in _lw.iter_rows(min_row=2, values_only=True):
                 for _v in _r:
                     if isinstance(_v, (int, float)) and _v:
-                        _late_q += int(_v)
+                        _late_q += float(_v)
     except Exception:
         pass
     if _late_q > 0:
@@ -1505,11 +1627,11 @@ if not ADD_BACK:
               f"说明库存实际导出于期末 {P_END} 之后；但 --asof={ASOF} 不晚于期末，"
               f"本次按无需回加处理会虚增短缺。请把 --asof 改为真实库存导出日（次月 2 日左右）")
 
-_det_sum = sum(int(d[7] or 0) for d in detail)
-if _det_sum != sum(oct_qty.values()):
+_det_sum = round(sum(float(d[7] or 0) for d in detail), 4)
+if abs(_det_sum - sum(oct_qty.values())) > 1e-9:
     _bail(f"明细合计 {_det_sum} ≠ 按条码汇总 {sum(oct_qty.values())}（源表可能有合计行或空行）")
-_src_q0 = sum(x["qty"] for x in _jia_settle)   # 促销物料不参与结算，不计入该勾稽
-if _src_q0 != T["q0"]:
+_src_q0 = _source_settled_q0   # 促销物料与主档非结算类均不参与结算勾稽
+if abs(_src_q0 - T["q0"]) > 0.01:
     _bail(f"挂账源表数量合计 {_src_q0} ≠ 归一化后 {T['q0']}（同品名多行合并异常）")
 
 _unreg_rows = [x for x in extra if (x["bar"] not in MS_BAR)] if MS_BAR else list(extra)
@@ -1517,15 +1639,14 @@ if _unreg_rows:
     _q = sum(x["qty"] for x in _unreg_rows)
     print(f"⚠ 库存有 {len(_unreg_rows)} 行、{_q} 件在主档 SKU 中查不到条码，已归入非结算桶，请建档或确认：")
     for x in _unreg_rows[:10]:
-        print(f"    - {x['bar'] or '（无条码）'} {x['name']} {x['qty']} 件")
+        print(f"    - {x['bar'] or '（无条码）'} {x['name']} {_qfmt(x['qty'])} 件")
 elif MS_BAR and EXTRA_Q:
     print(f"非结算桶 {EXTRA_Q} 件，均已在主档标为非结算类")
 
-_resid = round(BOOK_END_P - ADJ_VAL + T["diff_amt"], 2)
 _sum_q0 = sum(x["q0"] for x in rows)
-if abs(_resid) > 0.01 or _sum_q0 != T["q0"]:
-    _bail(f"结转残差 {_resid}，期初合计 {_sum_q0} ≠ {T['q0']}")
-print(f"差异 {T['diff']}件/{T['diff_amt']} ({DIFF_RATE*100:.2f}%) | 自检通过（残差 0.00）| 非结算片装 {EXTRA_Q}件")
+if _sum_q0 != T["q0"]:
+    _bail(f"BIP 期初数量合计 {_sum_q0} ≠ {T['q0']}")
+print(f"盈亏 {_qfmt(T['diff'])} 件／{T['diff_amt']:,.2f} 元 | 数量勾稽与金额分列复算通过 | 非结算物料 {EXTRA_Q} 件")
 
 # ==================== 工作簿框架 ====================
 out = openpyxl.Workbook(); out.remove(out.active)
@@ -1563,6 +1684,8 @@ def hdr(ws, r, c1, headers, h=36, fl=NAVY):
     ws.row_dimensions[r].height = h
 
 def num(cell, v, fmt="#,##0"):
+    if isinstance(v, float) and v == int(v):
+        v = int(v)  # 整数值不写 60.0，数量列保持整数观感；实数仍保留小数
     cell.value = v; cell.number_format = fmt
     cell.font = F(9)
     cell.alignment = A("right", "center", False, 1) if ".00" in fmt else A("center")
@@ -1596,15 +1719,12 @@ mput(ws, r, 3, r, 12, f"甲方未结算数据（{ASOF} 导出）／乙方销售�
 ws.row_dimensions[r].height = 24; r += 2
 
 sec(ws, r, 1, 12, "二、对账结论"); r += 1
-_kpi_diff_lab = "库存差异（净短缺，元）" if T["diff"] < 0 else ("库存差异（净盘盈，元）" if T["diff"] > 0 else "库存差异（元）")
-kpi = [("本月应结算金额（元）", T['settle'], f"结算数量 {T['q10']} 件 · {sum(1 for r in rows if r['q10'] > 0)} 个单品", NAVY, VLBLUE),
-       ("期初未结算货值（元）", OPEN_VAL, f"铺货数量 {T['q0']:,} 件（首批铺货）", BLUE, VLBLUE),
-       ("调整后结存货值（元）", ADJ_VAL,
-        (f"库存 {T['act']:,} ＋ {NEXT_M}月已销 {T['q11']} ＝ {T['adj']:,} 件" if ADD_BACK
-         else f"库存 {T['act']:,}（导出日不晚于期末）"), GREEN, LGREEN),
-       (_kpi_diff_lab, abs(T['diff_amt']),
-        (f"{T['diff']:+d} 件 · 占理论结存 {abs(DIFF_RATE)*100:.2f}%" if diff_rows
-         else f"{len(ok_rows)} 个单品账实相符"), RED, LRED)]
+_variance_label = "盈亏列示（净短缺，元）" if T["diff"] > 0 else ("盈亏列示（净盘盈，元）" if T["diff"] < 0 else "盈亏列示（元）")
+kpi = [("本期结算总额（元）", SETTLEMENT_TOTAL, f"净动销 {_qfmt(T['q10'])} 件 · {'含本期授权盈亏' if VARIANCE_INCLUDED else '盈亏未纳入'}", NAVY, VLBLUE),
+       ("正常销售货款（元）", GROSS_SALES, "逐笔销售数量 × 销售日合同价", BLUE, VLBLUE),
+       ("退货冲减金额（元）", RETURN_AMOUNT, "按原销售价冲减，不按退货日猜价", GREEN, LGREEN),
+       (_variance_label, T['diff_amt'],
+        (f"{_qfmt_s(T['diff'])} 件 · 正数短缺／负数盘盈" if diff_rows else f"{len(ok_rows)} 个单品账实相符"), RED, LRED)]
 for i, (lab, val, sub, col, bg) in enumerate(kpi):
     c1 = 1 + i * 3
     mput(ws, r, c1, r, c1 + 2, lab, F(8.5, True, col), A("center"), bg)
@@ -1616,52 +1736,40 @@ ws.row_dimensions[r + 1].height = 38
 ws.row_dimensions[r + 2].height = 22
 r += 4
 
-sec(ws, r, 1, 12, "三、结算与核对口径（关键：库存需回加导出日前已发生销量）" if ADD_BACK
-    else "三、结算与核对口径（库存导出日不晚于期末，无需回加）"); r += 1
+sec(ws, r, 1, 12, "三、结算与核对口径（数量勾稽、金额分列）"); r += 1
 formula = [
-    ("① 本期结算金额", f"＝ Σ（乙方经对账确认的 {_d_end.month} 月实际动销数量 × 甲方供货结算单价）"),
-    ("② 甲方理论结存", f"＝ 甲方期初未结算数量 － 乙方 {_d_end.month} 月申报动销数量　【截至 {P_END}】"),
-    ("③ 乙方调整后结存", (f"＝ 乙方 {ASOF} 库存 ＋ {NEXT_LABEL}已发生销售数量　【回加至同一时点】" if ADD_BACK
-                          else f"＝ 乙方 {ASOF} 库存（导出日不晚于期末，即为期末结存）")),
-    ("④ 库存差异", "＝ 乙方调整后结存 － 甲方理论结存（负数表示存货短缺）"),
-    ("⑤ 账实勾稽", "期末账面货值 － 调整后结存货值 ＝ 库存差异金额（本期 ①→⑦ 逐式复算相符，⑥ 为差额项）"),
+    ("① 正常销售货款", "＝ Σ（每笔销售数量 × 该笔销售日期生效合同价）"),
+    ("② 退货冲减金额", "＝ －Σ（每笔退货数量 × 原销售单价）；数量在本期同步冲减"),
+    ("③ 理论期末数量", f"＝ 本次 BIP 期初数量 － 本期净动销数量【截至 {P_END}】"),
+    ("④ 盘点盈亏", "＝ 理论期末 －（库存导出＋导出日前已销回加）；正数短缺、负数盘盈"),
+    ("⑤ 金额分列", "盈亏按期末合同价列示；默认不进总额，纳入须绑定本期的单次授权，不用价差倒挤"),
 ]
 for lab, txt in formula:
     mput(ws, r, 1, r, 3, lab, F(9, True, BLUE), A("left", "center", True, 1), VLBLUE)
     mput(ws, r, 4, r, 12, txt, F(9), A("left", "center", True, 1))
     ws.row_dimensions[r].height = 24; r += 1
 _add_note = (
-    f"说明：乙方库存导出日为 {ASOF}，晚于对账截止日 {P_END}，其间已发生销售 {T['q11']} 件。"
-    f"若直接以库存对比期末理论结存，会因时间口径差异虚增短缺；故统一将 {NEXT_LABEL}销量回加至库存，"
-    f"使双方数据同处 {P_END} 同一时点后再比对。" if ADD_BACK else
-    f"说明：乙方库存导出日 {ASOF} 不晚于对账截止日 {P_END}，无需回加，库存即为期末结存。")
+    f"说明：BIP 期初数量 {T['q0']} 件直接采用本次甲方导出，不与上期台账强制衔接。乙方库存导出日为 {ASOF}，"
+    f"晚于对账截止日 {P_END}，其间已发生销售 {T['q11']} 件；回加后统一至 {P_END} 核对。" if ADD_BACK else
+    f"说明：BIP 期初数量 {T['q0']} 件直接采用本次甲方导出，不与上期台账强制衔接。乙方库存导出日 {ASOF} 不晚于期末，无需回加。")
 mput(ws, r, 1, r, 12, _add_note, F(8.5, False, AMBER), A("left", "center", True, 1), LAMBER)
 ws.row_dimensions[r].height = 46; r += 2
 
 sec(ws, r, 1, 12, "四、主要结论"); r += 1
-_settle_after = T["settle"] - T["diff_amt"]
 concl = [
-    f"1. 本月应结算货款 {T['settle']:,.2f} 元（{T['q10']} 件／{sum(1 for r in rows if r['q10'] > 0)} 个单品）。"
-    + (f"{_d_next.isoformat()} 至 {_d_asof.isoformat()} 期间发生的 {T['q11']} 件销售（{NOV_VAL:,.2f} 元）"
-       f"不属本期，不计入本期结算；归属期间由双方确认。" if ADD_BACK
-       else "库存导出日不晚于期末，无导出日前销售需回加。"),
-    (f"2. 库存核对：{len(ok_rows) + len(diff_rows)} 个有铺货单品中 {len(ok_rows)} 个账实相符；{len(diff_rows)} 个存在差异，净差异 {T['diff']:+d} 件／{T['diff_amt']:,.2f} 元（负数为短缺），占理论结存 {abs(DIFF_RATE)*100:.2f}%。"
-     if diff_rows else
-     f"2. 库存核对：{len(ok_rows)} 个有铺货单品全部账实相符，差异为 0。"),
-    ("3. 逐 SKU 差异：" + "、".join(f"{r['name']} {r['diff']:+d} 件（{'短缺' if r['diff'] < 0 else '盘盈'}）" for r in sorted(diff_rows, key=lambda x: x['diff']))
-     + f"；其余 {len(ok_rows)} 个单品账实相符。差异原因待双方核对确认。") if diff_rows else
-  f"3. 逐 SKU 库存与账面差异均为 0，明细见附表 02《库存差异表》。",
-    (f"4. 期末未结算货值（甲方全部）{BOOK_END:,.2f} 元；乙方调整后结存货值 {ADJ_VAL:,.2f} 元（仅含已提供库存的 {len(_prov)} 个 SKU）。"
-     f"其中乙方未提供库存的 {len(absent_rows)} 个 SKU 理论结存 {_absent_end:,.2f} 元未参与核对；"
-     f"可核对部分理论结存 {round(THEO_VAL_P - NOV_VAL_P, 2):,.2f} 元，库存差异 {T['diff_amt']:,.2f} 元。"
-     f"详见附表 02。") if absent_rows else
-    (f"4. 期末未结算货值 {BOOK_END:,.2f} 元；乙方调整后结存货值 {ADJ_VAL:,.2f} 元；"
-     f"差额 {BOOK_END - ADJ_VAL:,.2f} 元即上述库存差异金额，已在本表逐项列示。"),
-    (f"5. 库存净差异 {T['diff']:+d} 件／{T['diff_amt']:,.2f} 元未纳入本期结算。差异原因与归属由甲乙双方核对确认后，按确认结果重新出具"
-       + (f"对账单与贴花。" if TH_ACTIVE else "对账单。")) if diff_rows else
-    f"5. 本期库存账实相符，无差异需调整；期末结存货值与乙方库存一致。",
-    f"6. 本期结算金额 {T['settle']:,.2f} 元；期末未结算货值（甲方账面）{BOOK_END:,.2f} 元。",
-] + ([f"7. 贴花费用：按本期动销 {T['q10']} 件 × 各单品当期生效贴花标准计算，合计 {TH_TOTAL:,.2f} 元，明细见对账单第三节；兑付方式由双方书面确认。"] if TH_ACTIVE else [])
+    f"1. 正常销售货款 {GROSS_SALES:,.2f} 元，退货冲减 {RETURN_AMOUNT:,.2f} 元，流水结算金额 {T['settle']:,.2f} 元；本期结算总额 {SETTLEMENT_TOTAL:,.2f} 元。",
+    (f"2. 库存核对：{len(ok_rows) + len(diff_rows)} 个有铺货单品中 {len(ok_rows)} 个账实相符；{len(diff_rows)} 个存在盈亏，净盈亏 {_qfmt_s(T['diff'])} 件／{T['diff_amt']:,.2f} 元（正数短缺、负数盘盈）。"
+     if diff_rows else f"2. 库存核对：{len(ok_rows)} 个有铺货单品全部账实相符，盈亏为 0。"),
+    ("3. 逐 SKU 盈亏：" + "、".join(f"{r['name']} {_qfmt_s(r['diff'])} 件（{'短缺' if r['diff'] > 0 else '盘盈'}）" for r in sorted(diff_rows, key=lambda x: -x['diff']))
+     + "；原因与归属待双方核对，本报告不作责任认定。") if diff_rows else
+    "3. 逐 SKU 库存与账面盈亏均为 0，明细见附表 02《库存差异表》。",
+    (f"4. 有 {len(absent_rows)} 个 SKU 未提供乙方库存，不按 0 计，已单独列为待补依据。" if absent_rows else
+     "4. 全部结算 SKU 均已提供乙方库存，任何非零盈亏均已逐 SKU 列示，不设比例阈值。"),
+    (f"5. 盈亏列示金额 {T['diff_amt']:,.2f} 元"
+     + ("已依据仅绑定本期的单次授权纳入结算总额。" if VARIANCE_INCLUDED else "未纳入本期结算总额；如需纳入，须另行对本期间单次授权。")) if diff_rows else
+    "5. 本期库存账实相符，无盈亏需核对。",
+    f"6. 合同价格政策是货款单价唯一来源；BIP 仅提供期初数量。正常销售按销售日取价，退货按原销售价冲减。",
+] + ([f"7. 贴花费用合计 {TH_TOTAL:,.2f} 元：正常销售按 {P_END} 生效标准，退货按原销售标准冲减；盘点盈亏不参与贴花，兑付方式由双方书面确认。"] if TH_ACTIVE else [])
 if V17:
     _open_all = sum(_ledger_sum(k, "opening") for k in _ledger_kinds())
     concl.append(f"{len(concl) + 1}. 试用装／中小样：期初均为 {_open_all:,} 件，"
@@ -1697,11 +1805,11 @@ ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=4)
 ws.merge_cells(start_row=r, start_column=5, end_row=r, end_column=8)
 ws.merge_cells(start_row=r, start_column=9, end_row=r, end_column=12)
 r += 1
-_asks_raw = [("本月结算金额确认", f"{T['settle']:,.2f} 元／{T['q10']} 件，逐 SKU 核对单价与动销数量", f"签章确认，确认后 {CT_SIGN_TXT}内寄回原件")]
+_asks_raw = [("本期结算总额确认", f"{SETTLEMENT_TOTAL:,.2f} 元／净动销 {_qfmt(T['q10'])} 件，逐笔核对销售日合同价与原退货价", f"签章确认，确认后 {CT_SIGN_TXT}内寄回原件")]
 if diff_rows:
-    _asks_raw.append(("库存差异说明", f"净 {T['diff']:+d} 件／{T['diff_amt']:,.2f} 元，逐 SKU 书面说明并提供支持单据", f"收到后 {CT_OBJ_TXT}内书面回复"))
+    _asks_raw.append(("库存盈亏核对", f"净 {_qfmt_s(T['diff'])} 件／列示 {T['diff_amt']:,.2f} 元（正数短缺、负数盘盈），逐 SKU 核对并提供支持单据", f"收到后 {CT_OBJ_TXT}内书面回复；是否纳入结算须逐期单次授权"))
 _asks_raw += [("非结算类货品说明", f"{len(extra)} 个单品共 {EXTRA_Q:,} 件，未列入甲方挂账台账，不属甲方铺货货品，不纳入本期结算范围", "上述货品归属另行确定，不参与本期及后续货款结算；请乙方核对数量"),
-              ("结算期间划分", (f"{NEXT_LABEL}销售 {T['q11']} 件（{NOV_VAL:,.2f} 元）回加库存、不计入本期"
+              ("结算期间划分", (f"{NEXT_LABEL}销售 {T['q11']} 件仅回加库存、不计入本期"
                                if ADD_BACK else "库存导出日不晚于期末，无导出日前销售需回加"), "请书面回复确认")]
 if V17:
     _asks_raw.append(("试用装／中小样使用数量",
@@ -1795,7 +1903,7 @@ for c in range(1, 8):
 ws.row_dimensions[4].height = 6
 
 mput(ws, 5, 1, 5, 4, f"甲方（供货方）：{PA_NAME}", F(9.5, True), A("left", "center", True, 0))
-mput(ws, 5, 5, 5, 7, f"单据编号：＿＿＿＿＿＿　　制单日期：{ASOF_CN}", F(9, False, DGREY), A("right", "center", True, 0))
+mput(ws, 5, 5, 5, 7, f"单据编号：{STATEMENT_NO or '＿＿＿＿＿＿'}　　制单日期：{ASOF_CN}", F(9, False, DGREY), A("right", "center", True, 0))
 mput(ws, 6, 1, 6, 4, f"纳税人识别号：{PA_TAX}", F(9, False, DGREY), A("left", "center", True, 0))
 mput(ws, 6, 5, 6, 7, f"合同编号：{CONTRACT_NO}", F(9, False, DGREY), A("right", "center", True, 0))
 mput(ws, 7, 1, 7, 4, f"乙方（代销方）：{PB_NAME}", F(9.5, True), A("left", "center", True, 0))
@@ -1812,10 +1920,10 @@ ws.row_dimensions[9].height = 26
 ws.row_dimensions[10].height = 5
 
 sec(ws, 11, 1, 7, "一、本期结算明细")
-hdr(ws, 12, 1, ["序号", "商品名称", "规格", "单位", "结算单价\n（元）", "本期动销数量", "结算金额\n（元）"], 34)
+hdr(ws, 12, 1, ["序号", "商品名称", "规格", "单位", "期末参考单价\n（元）", "本期净动销数量", "流水结算金额\n（元）"], 34)
 r = 13
 idx = 0
-pay_rows = [x for x in rows if x["q0"] > 0]
+pay_rows = [x for x in rows if x["q0"] > 0 or abs(x["q10"]) > 1e-9 or abs(x["settle"]) > 0.005]
 for x in pay_rows:
     idx += 1
     bg = WHITE if idx % 2 else GREY
@@ -1825,44 +1933,41 @@ for x in pay_rows:
     mput(ws, r, 4, r, 4, x["unit"], F(9), A("center"), bg)
     c = ws.cell(row=r, column=5); num(c, x["price"], "#,##0.00"); c.fill = fill(bg)
     c = ws.cell(row=r, column=6); num(c, x["q10"]); c.fill = fill(bg)
-    if x["q10"] == 0:
+    if abs(x["q10"]) <= 1e-9:
         c.font = F(9, c="A6A6A6")
     c = ws.cell(row=r, column=7); num(c, x["settle"], "#,##0.00"); c.fill = fill(bg)
     ws.row_dimensions[r].height = 26
     r += 1
-mput(ws, r, 1, r, 4, "合　计", F(9.5, True, NAVY), A("center"), LBLUE)
+mput(ws, r, 1, r, 4, "本期结算总额", F(9.5, True, NAVY), A("center"), LBLUE)
 c = ws.cell(row=r, column=5); c.fill = fill(LBLUE); c.border = Border(left=THIN, right=THIN, top=MED, bottom=MED)
 c = ws.cell(row=r, column=6); num(c, T["q10"]); c.font = F(10, True, NAVY)
 c.fill = fill(LBLUE); c.border = Border(left=THIN, right=THIN, top=MED, bottom=MED)
-c = ws.cell(row=r, column=7); num(c, T["settle"], "#,##0.00"); c.font = F(10, True, NAVY)
+c = ws.cell(row=r, column=7); num(c, SETTLEMENT_TOTAL, "#,##0.00"); c.font = F(10, True, NAVY)
 c.fill = fill(LBLUE); c.border = Border(left=THIN, right=THIN, top=MED, bottom=MED)
 ws.row_dimensions[r].height = 28
 r += 1
 mput(ws, r, 1, r, 3, "人民币（大写）", F(9, True, DGREY), A("center"), GREY)
-mput(ws, r, 4, r, 7, rmb_upper(T["settle"]), F(10.5, True, NAVY), A("left", "center", True, 1), GREY)
+mput(ws, r, 4, r, 7, rmb_upper(SETTLEMENT_TOTAL), F(10.5, True, NAVY), A("left", "center", True, 1), GREY)
 ws.row_dimensions[r].height = 30
+r += 1
+mput(ws, r, 1, r, 7, "说明：期末参考单价只用于库存盈亏列示，不代表本 SKU 的逐笔成交均价；每笔试算价与金额见附表 07。",
+     F(8, False, DGREY), A("left", "center", True, 1), GREY)
 r += 2
 
-sec(ws, r, 1, 7, f"二、铺货余额结转（{P_START} → {ASOF}）"); r += 1
+sec(ws, r, 1, 7, "二、金额分列（数量勾稽见附表 02）"); r += 1
 hdr(ws, r, 1, ["项目", "", "金额（元）", "计算／说明"], 26)
 ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=2)
 ws.merge_cells(start_row=r, start_column=4, end_row=r, end_column=7)
 r += 1
-roll = [("① 期初未结算货值" + ("（甲方全部）" if absent_rows else ""), OPEN_VAL, "甲方期初未结算数量 × 结算单价", False),
-        ("② 减：本期结算金额", T["settle"], "见“一、本期结算明细”", False),
-        ("③ 期末未结算货值" + ("（甲方全部）" if absent_rows else ""), BOOK_END, "＝ ① － ②", True),
-        ("④ 减：导出日前已销售未结算货值" if ADD_BACK else "④ 无需回加（库存导出日不晚于期末）",
-         NOV_VAL, (f"{sum(r['q11'] for r in rows)} 件，不计入本期结算" if ADD_BACK else "—"), False),
-        ("⑤ 期末理论结存货值" + ("（甲方全部）" if absent_rows else ""), round(BOOK_END - NOV_VAL, 2), "＝ ③ － ④", True)]
-if absent_rows:
-    roll += [(f"　其中：乙方未提供库存的 {len(absent_rows)} 个 SKU", _absent_end,
-              f"期初 {sum(r['q0'] for r in absent_rows)} 件；库存未知，不参与下列差异", False),
-             (f"　其中：可核对的 {len(_prov)} 个 SKU 理论结存", round(THEO_VAL_P - NOV_VAL_P, 2),
-              "＝ 上面两行之和", False)]
-roll += [("⑥ 库存差异（仅可核对 SKU，负数=短缺，正数=盘盈）", T["diff_amt"],
-          f"{T['diff']:+d} 件，详见附表 02", False),
-         ("⑦ 期末乙方库存货值", ACT_VAL,
-          ("＝ 可核对理论结存 ＋ ⑥，按甲方挂账单价重估" if absent_rows else "＝ ⑤ ＋ ⑥，按甲方挂账单价重估"), True)]
+roll = [
+    ("① 正常销售货款", GROSS_SALES, "Σ（每笔销售数量 × 销售日合同价）", False),
+    ("② 退货冲减金额", RETURN_AMOUNT, "－Σ（退货数量 × 原销售单价）", False),
+    ("③ 流水结算金额", T["settle"], "＝ ① ＋ ②；等于第一节各 SKU 流水金额之和", True),
+    ("④ 盘点盈亏列示金额", T["diff_amt"], f"{_qfmt_s(T['diff'])} 件 × 各 SKU 期末合同价；正数短缺、负数盘盈", False),
+    ("⑤ 本期结算总额", SETTLEMENT_TOTAL,
+     (("＝ ③ ＋ ④（已获仅绑定本期的单次授权）；与第一节合计及大写金额一致" if VARIANCE_INCLUDED
+       else "＝ ③；④ 仅列示核对，未纳入总额；与第一节合计及大写金额一致")), True),
+]
 for lab, amt, note, bold in roll:
     mput(ws, r, 1, r, 2, lab, F(9, bool(bold), NAVY if bold else "000000"), A("left", "center", True, 1), LBLUE if bold else WHITE)
     c = ws.cell(row=r, column=3); num(c, amt, "#,##0.00")
@@ -1873,35 +1978,36 @@ for lab, amt, note, bold in roll:
     r += 1
 r += 1
 
-sec(ws, r, 1, 7, "三、贴花费用（销售奖励，本期动销口径）"); r += 1
+sec(ws, r, 1, 7, "三、贴花费用（销售奖励，独立于货款与盈亏）"); r += 1
 if TH_ACTIVE:
-    hdr(ws, r, 1, ["序号", "商品名称", "动销数量", "贴花标准\n（元/件）", "贴花金额\n（元）", "依据", ""], 24)
+    hdr(ws, r, 1, ["序号", "商品名称", "净动销数量", "贴花标准\n（元/件）", "贴花金额\n（元）", "依据", ""], 24)
     ws.merge_cells(start_row=r, start_column=6, end_row=r, end_column=7)
     r += 1
     for i, x in enumerate(TH_ROWS, 1):
         mput(ws, r, 1, r, 1, i, F(9), A("center"), WHITE)
         mput(ws, r, 2, r, 2, x["name"], F(9), A("left", "center", True, 1), WHITE)
         c = ws.cell(row=r, column=3); num(c, x["qty"]); c.font = F(9); c.fill = fill(WHITE)
-        c = ws.cell(row=r, column=4); num(c, x["std"], "#,##0.00"); c.font = F(9); c.fill = fill(WHITE)
+        c = ws.cell(row=r, column=4)
+        if x["std"] is None:
+            c.value = "逐笔"; c.font = F(8.5); c.alignment = A("center"); c.fill = fill(WHITE)
+        else:
+            num(c, x["std"], "#,##0.00"); c.font = F(9); c.fill = fill(WHITE)
         c = ws.cell(row=r, column=5); num(c, x["amt"], "#,##0.00"); c.font = F(9); c.fill = fill(WHITE)
-        mput(ws, r, 6, r, 7, "双方确认的贴花标准（当期生效版本）", F(8, False, DGREY), A("left", "center", True, 1), WHITE)
+        mput(ws, r, 6, r, 7, "正常销售取期末标准；退货按原销售标准冲减", F(8, False, DGREY), A("left", "center", True, 1), WHITE)
         ws.row_dimensions[r].height = 20
         r += 1
     mput(ws, r, 1, r, 2, "合　计", F(9.5, True, WHITE), A("center"), NAVY)
     c = ws.cell(row=r, column=3); num(c, sum(x["qty"] for x in TH_ROWS)); c.font = F(9.5, True, WHITE)
     c.fill = fill(NAVY); c.border = Border(left=THIN, right=THIN, top=MED, bottom=MED)
-    for j in (4,):
-        c = ws.cell(row=r, column=j); c.value = None; c.fill = fill(NAVY)
-        c.border = Border(left=THIN, right=THIN, top=MED, bottom=MED)
+    c = ws.cell(row=r, column=4); c.value = None; c.fill = fill(NAVY); c.border = Border(left=THIN, right=THIN, top=MED, bottom=MED)
     c = ws.cell(row=r, column=5); num(c, TH_TOTAL, "#,##0.00"); c.font = F(10, True, WHITE)
     c.fill = fill(NAVY); c.border = Border(left=THIN, right=THIN, top=MED, bottom=MED)
-    mput(ws, r, 6, r, 7, "按本期动销数量 × 当期生效标准", F(8, False, WHITE), A("left", "center", True, 1), NAVY)
+    mput(ws, r, 6, r, 7, "正常销售与退货冲减逐笔相加", F(8, False, WHITE), A("left", "center", True, 1), NAVY)
     ws.row_dimensions[r].height = 26
     r += 1
     mput(ws, r, 2, r, 7,
-         f"口径：贴花按本期结算类动销数量 × 当期生效贴花标准计算（标准取 {P_END} 生效版本；"
-         f"导出日前已发生销售的贴花随其货款计入下期）。"
-         f"贴花兑付方式与开票口径按合同约定执行；本表列示本期贴花计算结果。",
+         f"口径：正常销售按数量 × {P_END} 生效贴花标准；原销售已计提的退货按原标准冲减，未计提不冲。"
+         f"盘点盈亏不参与贴花；兑付方式与开票口径按合同约定执行。",
          F(8.5, False, AMBER), A("left", "center", True, 1), LAMBER)
     ws.row_dimensions[r].height = 44
     r += 1
@@ -1913,15 +2019,15 @@ r += 1
 sec(ws, r, 1, 7, "四、对账说明"); r += 1
 notes = [
     ("1.", f"本对账单依据《经销合同》（编号 {CONTRACT_NO}）约定的结算口径出具（{SETTLE_TERMS_TXT}），未动销铺货不计入本期。"),
-    ("2.", f"数据来源：甲方未结算数据（{ASOF} 导出）、乙方提供的 {_d_end.year} 年 {_d_end.month} 月销售数据及 {ASOF} 库存数据。"),
-    ("3.", (f"乙方库存导出日为 {ASOF}，{NEXT_LABEL}期间发生销售 {T['q11']} 件（{NOV_VAL:,.2f} 元）。该部分已从库存回加、并从本期结算中剔出，不计入本期结算；归属期间由双方确认。"
+    ("2.", f"数据来源：本次甲方 BIP 数量导出（{ASOF}）、合同价格政策、乙方 {_d_end.year} 年 {_d_end.month} 月销售数据及 {ASOF} 库存数据。BIP 单价与金额不参与结算。"),
+    ("3.", (f"乙方库存导出日为 {ASOF}，{NEXT_LABEL}期间发生销售 {T['q11']} 件，仅回加库存核对，不计入本期结算；归属期间由双方确认。"
              if ADD_BACK else f"乙方库存导出日为 {ASOF}，不晚于对账截止日 {P_END}，无需回加导出日前销售。")),
-    ("4.", (f"本期结算数量与乙方库存变动逐 SKU 勾稽：{len(ok_rows) + len(diff_rows)} 个有铺货单品中 {len(ok_rows)} 个账实相符，{len(diff_rows)} 个存在差异，净差异 {T['diff']:+d} 件／{T['diff_amt']:,.2f} 元（详见附表 02《库存差异表》），该部分未计入本期结算货款，待双方核对确认后处理。"
-            if diff_rows else
-            f"本期结算数量与乙方库存变动逐 SKU 勾稽：{len(ok_rows)} 个有铺货单品全部账实相符，无差异（详见附表 02《库存差异表》）。")),
+    ("4.", (f"数量勾稽：{len(diff_rows)} 个 SKU 存在盈亏，净盈亏 {_qfmt_s(T['diff'])} 件／列示 {T['diff_amt']:,.2f} 元（正数短缺、负数盘盈）。"
+            + ("本期间已获单次授权，盈亏纳入结算总额。" if VARIANCE_INCLUDED else "盈亏未纳入本期结算总额，任何非零项均待双方核对。")
+            if diff_rows else f"数量勾稽：{len(ok_rows)} 个有铺货单品全部账实相符，无盈亏（详见附表 02）。")),
     ("5.", f"乙方应于收到本对账单后 {CT_OBJ_TXT}内书面提出异议，逾期未提出视为确认；确认后 {CT_SIGN_TXT}内将签章原件寄回甲方。"),
-    ("6.", f"付款期限：乙方签章确认后 {CT_SIGN_TXT}内将上述款项汇入甲方指定账户；部分异议不影响无争议款项如期支付。"),
-    ("7.", "本对账单所列单价为双方约定的供货结算价；开票事宜按合同约定执行。"),
+    ("6.", f"付款期限：按合同原文及主档登记的付款截止日执行；本报告不自行因节假日提前或顺延。部分异议不影响无争议款项如期支付。"),
+    ("7.", "合同价格政策为单价唯一权威源；期中调价逐笔按业务日期取价，退货按原销售价冲减；开票事宜按合同约定执行。"),
 ]
 if not V17:
     if PROMO:
@@ -1968,20 +2074,20 @@ mput(ws, 3, 1, 3, 16, f"{PA_NAME}  ×  {PB_NAME}    ·    对账期间 {P_START}
      F(9, False, DGREY), A("center"))
 ws.row_dimensions[3].height = 22
 mput(ws, 4, 1, 4, 16,
-     (f"口径：乙方库存导出日为 {ASOF}，晚于对账截止日 {P_END}，须将 {NEXT_LABEL}已发生销售（共 {T['q11']} 件 / {NOV_VAL:,.2f} 元）回加至乙方库存，使双方数据处于同一时点后再行比对。"
-      f"　调整后结存 ＝ 乙方库存 ＋ {NEXT_M} 月销售；差异 ＝ 调整后结存 － 理论结存。"
+     (f"口径：乙方库存导出日为 {ASOF}，晚于对账截止日 {P_END}，须将 {NEXT_LABEL}已发生销售 {T['q11']} 件回加至乙方库存。"
+      f"实际结存＝库存导出＋回加；盈亏＝理论期末－实际结存，正数短缺、负数盘盈。任何非零盈亏均列示，不设阈值。"
       if ADD_BACK else
-      f"口径：乙方库存导出日 {ASOF} 不晚于对账截止日 {P_END}，库存即为期末结存，无需回加。差异 ＝ 乙方库存 － 理论结存。"),
+      f"口径：乙方库存导出日 {ASOF} 不晚于期末，无需回加。盈亏＝理论期末－库存导出，正数短缺、负数盘盈；任何非零盈亏均列示。"),
      F(8.5, False, AMBER), A("left", "center", True, 0), LAMBER)
 ws.row_dimensions[4].height = 34
 ws.row_dimensions[5].height = 6
 
-HDR2 = ["序号", "商品条码", "商品名称", "规格", "单位", "结算单价\n（元）",
-        "甲方期初\n未结算数量", f"减：{_d_end.month}月\n申报动销", "甲方理论\n结存数量",
+HDR2 = ["序号", "商品条码", "商品名称", "规格", "单位", "期末合同价\n（列示用）",
+        "BIP 期初\n数量", f"减：{_d_end.month}月\n净动销", "理论期末\n数量",
         f"乙方 {_d_asof.month:02d}-{_d_asof.day:02d}\n库存（系统导出）",
         (f"加：{_d_next.month}月\n{_d_next.day}—{_d_asof.day}销售" if ADD_BACK else "导出日前销售\n（无需回加）"),
-        "乙方调整后\n结存数量",
-        "差异数量", "差异金额\n（元）", "差异率\n（÷理论结存）", "差异性质"]
+        "实际结存\n数量",
+        "盈亏数量\n（＋短缺）", "盈亏列示金额\n（元）", "盈亏率\n（÷理论期末）", "核对状态"]
 
 r = 6
 _SEC = ["一", "二", "三", "四", "五"]
@@ -2017,7 +2123,7 @@ else:
                 num(cell, v, "#,##0.00" if j in (6, 14) else "#,##0")
                 if j in (13, 14): cell.font = F(8.5, True, RED)
             cell.fill = fill(bg)
-        mput(ws, r, 16, r, 16, "库存短缺，需说明去向" if x["diff"] < 0 else "库存盘盈，需说明来源", F(8, True, RED), A("center"), bg)
+        mput(ws, r, 16, r, 16, "库存短缺，需说明去向" if x["diff"] > 0 else "库存盘盈，需说明来源", F(8, True, RED), A("center"), bg)
         ws.row_dimensions[r].height = 30
         for k, v in [("q0", x["q0"]), ("q10", x["q10"]), ("theo", x["theo"]), ("act", x["act"]),
                      ("q11", x["q11"]), ("adj", x["adj"]), ("diff", x["diff"]), ("amt", x["diff_amt"])]:
@@ -2038,7 +2144,7 @@ else:
     cell = ws.cell(row=r, column=15); cell.value = abs(tot_rate); cell.number_format = "0.00%"
     cell.font = F(9, True, RED); cell.alignment = A("center"); cell.fill = fill(LBLUE)
     cell.border = Border(left=THIN, right=THIN, top=MED, bottom=MED)
-    mput(ws, r, 16, r, 16, ((f"{abs(tot_d['diff'])} 件净短缺" if tot_d["diff"] < 0 else f"{tot_d['diff']} 件净盘盈")
+    mput(ws, r, 16, r, 16, ((f"{_qfmt(abs(tot_d['diff']))} 件净短缺" if tot_d["diff"] > 0 else f"{_qfmt(abs(tot_d['diff']))} 件净盘盈")
                                if tot_d["diff"] else "无差异"), F(9, True, RED), A("center"), LBLUE)
     ws.row_dimensions[r].height = 26
     r += 2
@@ -2092,8 +2198,8 @@ for j, v in [(6, None), (7, Q0_P), (8, -Q10_P), (9, THEO_Q_P), (10, T["act"]),
         if j in (13, 14, 15): cell.font = F(9.5, True, RED)
         else: cell.font = F(9.5, True, WHITE)
     cell.fill = fill(NAVY); cell.border = Border(left=THIN, right=THIN, top=MED, bottom=MED)
-mput(ws, r, 16, r, 16, ((f"净短缺 {abs(T['diff'])} 件（{abs(DIFF_RATE)*100:.2f}%）" if T['diff'] < 0
-                          else f"净盘盈 {T['diff']} 件（{abs(DIFF_RATE)*100:.2f}%）") if T['diff'] else "无差异"),
+mput(ws, r, 16, r, 16, ((f"净短缺 {_qfmt(T['diff'])} 件（{abs(DIFF_RATE)*100:.2f}%）" if T['diff'] > 0
+                          else f"净盘盈 {_qfmt(abs(T['diff']))} 件（{abs(DIFF_RATE)*100:.2f}%）") if T['diff'] else "无盈亏"),
      F(9, True, WHITE), A("center"), NAVY)
 ws.row_dimensions[r].height = 28
 r += 1
@@ -2106,8 +2212,8 @@ ws.row_dimensions[r].height = 22
 r += 2
 if absent_rows:
     sec(ws, r, 1, 16, f"{_ns()}、乙方未提供库存的 SKU（{len(absent_rows)} 个，不计入差异合计）"); r += 1
-    hdr(ws, r, 1, ["序号", "商品条码", "商品名称", "规格", "单位", "结算单价\n（元）",
-                   "甲方期初\n未结算数量", "本期动销\n（件）", "说　　明"], 32, fl="C55A11")
+    hdr(ws, r, 1, ["序号", "商品条码", "商品名称", "规格", "单位", "期末合同参考价\n（元）",
+                   "BIP 期初\n数量", "本期净动销\n（件）", "说　　明"], 32, fl="C55A11")
     ws.merge_cells(start_row=r, start_column=9, end_row=r, end_column=16)
     r += 1
     for i, x in enumerate(absent_rows, 1):
@@ -2157,15 +2263,17 @@ r += 2
 
 sec(ws, r, 1, 16, f"{_ns()}、差异结论"); r += 1
 advice = [
-    ("差异性质", (f"{len(diff_rows)} 个 SKU 存在差异，净差异 {T['diff']:+d} 件 / {T['diff_amt']:,.2f} 元（负数为短缺），"
-                f"占理论结存 {abs(DIFF_RATE)*100:.2f}%；{len(ok_rows)} 个 SKU 账实相符。") if diff_rows
+    ("盈亏性质", (f"{len(diff_rows)} 个 SKU 存在盈亏，净盈亏 {_qfmt_s(T['diff'])} 件／列示 {T['diff_amt']:,.2f} 元（正数短缺、负数盘盈）；"
+                f"{len(ok_rows)} 个 SKU 账实相符。所有非零项均已列示，无比例阈值。") if diff_rows
                else f"{len(ok_rows)} 个有铺货 SKU 全部账实相符。"),
-    ("差异分布", ("逐 SKU 差异：" + "、".join(f"{r['name']} {r['diff']:+d} 件" for r in sorted(diff_rows, key=lambda x: x['diff']))
-                + f"；其余 {len(ok_rows)} 个单品差异为 0。") if diff_rows else
-               f"{len(ok_rows)} 个有铺货单品全部账实相符，无差异。"),
+    ("盈亏分布", ("逐 SKU 盈亏：" + "、".join(f"{r['name']} {_qfmt_s(r['diff'])} 件" for r in sorted(diff_rows, key=lambda x: -x['diff']))
+                + f"；其余 {len(ok_rows)} 个单品盈亏为 0。") if diff_rows else
+               f"{len(ok_rows)} 个有铺货单品全部账实相符。"),
 ] + ([
-    ("差异原因", "本表仅列示双方数据的逐 SKU 差异，不作成因推断；差异原因与归属由甲乙双方核对确认。"),
-    ("待确认事项", f"上述差异请乙方逐 SKU 核对并书面说明，提供支持单据；差异确认前，净额 {abs(T['diff_amt']):,.2f} 元不纳入本期结算。是否调整本期结算及如何调整，由双方书面确认后另行出具单据。"),
+    ("差异原因", "本表仅列示双方数据的逐 SKU 盈亏，不作成因推断或责任认定；原因与归属由甲乙双方核对确认。"),
+    ("待确认事项", f"盈亏列示金额 {T['diff_amt']:,.2f} 元"
+                 + ("已依据本期单次授权纳入结算总额，授权不得向其他期间继承。" if VARIANCE_INCLUDED
+                    else "未纳入本期结算总额；如双方确认需要纳入，须对本期间另行单次授权后重新出单。")),
 ] if diff_rows else [])
 for lab, txt in advice:
     mput(ws, r, 1, r, 2, lab, F(9, True, BLUE), A("center", "center", True, 0), VLBLUE)
@@ -2199,15 +2307,15 @@ ws.row_dimensions[3].height = 22
 ws.row_dimensions[4].height = 6
 
 HDR3 = ["序号", "商品条码", "商品名称（乙方系统）", "甲方系统品名差异", "规格", "单位",
-        "结算单价", "甲方期初\n未结算数量", f"{_d_end.month} 月\n申报动销", "本月结算金额",
+        "期末合同\n参考价", "BIP 期初\n数量", f"{_d_end.month} 月\n净动销", "流水结算金额",
         (f"{_d_next.month} 月 {_d_next.day}—{_d_asof.day}\n销售" if ADD_BACK else "导出日前\n销售（无）"),
-        f"乙方 {_d_asof.month:02d}-{_d_asof.day:02d}\n库存（系统导出）", "乙方调整后\n结存", "甲方理论\n结存",
-        "差异数量", "差异金额", "核对结果"]
+        f"乙方 {_d_asof.month:02d}-{_d_asof.day:02d}\n库存（系统导出）", "实际结存\n（含回加）", "理论期末\n数量",
+        "盈亏数量\n（＋短缺）", "盈亏列示金额", "核对结果"]
 r = 5
 hdr(ws, r, 1, HDR3, 42); r += 1
 for i, x in enumerate(rows, 1):
     _ab = bool(x.get("absent"))
-    bg = (WHITE if i % 2 else GREY) if _ab else (LRED if x["diff"] < 0 else (LAMBER if x["diff"] else (WHITE if i % 2 else GREY)))
+    bg = LAMBER if _ab else (LRED if x["diff"] > 0 else (LAMBER if x["diff"] else (WHITE if i % 2 else GREY)))
     vals = [i, x["bar"], x["name"], x["note"] or "—", x["spec"], x["unit"], x["price"],
             x["q0"], x["q10"], x["settle"], x["q11"], x["act"], x["adj"], x["theo"],
             x["diff"], x["diff_amt"]]
@@ -2230,14 +2338,14 @@ for i, x in enumerate(rows, 1):
     if _ab:
         res, _rc = "未提供库存", "7F7F7F"
     else:
-        res = ("✗ 短缺" if x["diff"] < 0 else "✗ 盘盈") if x["diff"] else "✓ 相符"
-        _rc = (RED if x["diff"] < 0 else AMBER) if x["diff"] else GREEN
+        res = ("✗ 短缺" if x["diff"] > 0 else "✗ 盘盈") if x["diff"] else "✓ 相符"
+        _rc = (RED if x["diff"] > 0 else AMBER) if x["diff"] else GREEN
     mput(ws, r, 17, r, 17, res, F(8.5, True, _rc), A("center"), bg)
     ws.row_dimensions[r].height = 24
     r += 1
 mput(ws, r, 1, r, 6, "合　计", F(9.5, True, WHITE), A("center"), NAVY)
-for j, v in [(7, None), (8, Q0_P), (9, Q10_P), (10, T["settle"]), (11, T["q11"]),
-             (12, T["act"]), (13, T["adj"]), (14, THEO_Q_P), (15, T["diff"]), (16, T["diff_amt"])]:
+for j, v in [(7, None), (8, T["q0"]), (9, T["q10"]), (10, T["settle"]), (11, T["q11"]),
+             (12, T["act"]), (13, T["adj"]), (14, T["theo"]), (15, T["diff"]), (16, T["diff_amt"])]:
     cell = ws.cell(row=r, column=j)
     if v is None: cell.value = None
     else:
@@ -2254,9 +2362,9 @@ mput(ws, r, 1, r, 17,
      F(8, False, DGREY), A("left", "center", True, 0))
 r += 1
 mput(ws, r, 1, r, 17,
-     (f"注 2：乙方调整后结存 ＝ 乙方库存 ＋ {NEXT_LABEL}销售（{T['q11']} 件）；甲方理论结存 ＝ 期初未结算 － {_d_end.month} 月动销。二者同处 {P_END} 时点，可直接比较。"
+     (f"注 2：实际结存 ＝ 乙方库存 ＋ {NEXT_LABEL}销售（{T['q11']} 件）；理论期末 ＝ 本次 BIP 期初 － {_d_end.month} 月净动销。二者同处 {P_END} 时点；盈亏＝理论期末－实际结存，正数短缺、负数盘盈。"
       if ADD_BACK else
-      f"注 2：乙方调整后结存 ＝ 乙方库存（导出日不晚于期末，无需回加）；甲方理论结存 ＝ 期初未结算 － {_d_end.month} 月动销。二者同处 {P_END} 时点，可直接比较。"),
+      f"注 2：实际结存 ＝ 乙方库存（导出日不晚于期末，无需回加）；理论期末 ＝ 本次 BIP 期初 － {_d_end.month} 月净动销。二者同处 {P_END} 时点；盈亏＝理论期末－实际结存，正数短缺、负数盘盈。"),
      F(8, False, DGREY), A("left", "center", True, 0))
 r += 1
 mput(ws, r, 1, r, 17,
@@ -2266,71 +2374,57 @@ mput(ws, r, 1, r, 17,
 ws.freeze_panes = "D6"
 print("03 ok")
 
-# ==================== 04 甲方挂账明细 ====================
+# ==================== 04 甲方 BIP 数量明细 ====================
 ws = out.create_sheet("04-甲方挂账明细")
-setup(ws, [5, 40, 10, 13, 10, 10, 15, 5, 12, 18], "landscape")
+setup(ws, [5, 36, 13, 13, 15, 6, 13, 15, 25, 22], "landscape")
 ws.row_dimensions[1].height = 10
-mput(ws, 2, 1, 2, 10, "附 表 04　甲方未结算挂账明细", F(15, True, NAVY), A("center"))
+mput(ws, 2, 1, 2, 10, "附 表 04　甲方 BIP 期初数量明细", F(15, True, NAVY), A("center"))
 ws.row_dimensions[2].height = 32
-mput(ws, 3, 1, 3, 10, f"数据来源：甲方系统 {ASOF} 导出数据　·　金额单位：人民币元",
+mput(ws, 3, 1, 3, 10, f"数量来源：甲方 BIP {ASOF} 导出　·　价格来源：合同价格政策（BIP 单价／金额不读取）",
      F(8.5, False, DGREY), A("center"))
 ws.row_dimensions[3].height = 20
 ws.row_dimensions[4].height = 6
 r = 5
-hdr(ws, r, 1, ["序号", "商品名称", "单价", "未结算金额", "未结算数量", "初始数量", "商品条码", "单位", "金额校验", "备注"], 34)
+hdr(ws, r, 1, ["序号", "商品名称", "BIP 期初数量", "初始数量", "商品条码", "单位", "期末参考单价", "期末参考货值", "价格依据", "备注"], 34)
 r += 1
 for i, x in enumerate(rows, 1):
     bg = WHITE if i % 2 else GREY
     mput(ws, r, 1, r, 1, i, F(9), A("center"), bg)
     mput(ws, r, 2, r, 2, x["name"], F(9), A("left", "center", True, 0), bg)
-    for j, v in [(3, x["price"]), (4, x["src_amt"]), (5, x["q0"]), (6, x["init"])]:
-        cell = ws.cell(row=r, column=j)
-        num(cell, v, "#,##0.00" if j in (3, 4) else "#,##0"); cell.fill = fill(bg)
-    cell = ws.cell(row=r, column=7); cell.value = x["bar"]; cell.font = F(9); cell.alignment = A("center")
-    cell.number_format = "@"; cell.fill = fill(bg)
-    mput(ws, r, 8, r, 8, x["unit"], F(9), A("center"), bg)
-    chk = round(x["price"] * x["q0"] - x["src_amt"], 2)
-    cell = ws.cell(row=r, column=9); num(cell, chk, "#,##0.00"); cell.fill = fill(bg)
-    if abs(chk) < 0.01: cell.font = F(9, c=GREEN)
-    note = ""
-    if x["q0"] == 0: note = "本期无铺货余额"
-    elif x["init"] != x["q0"]: note = "初始数量与未结算数量不一致"
-    mput(ws, r, 10, r, 10, note or "—", F(8, c=DGREY), A("left", "center", True, 1), bg)
+    for j, v in [(3, x["q0"]), (4, x["init"])]:
+        cell = ws.cell(row=r, column=j); num(cell, v); cell.fill = fill(bg)
+    cell = ws.cell(row=r, column=5); cell.value = x["bar"]; cell.font = F(9); cell.alignment = A("center"); cell.number_format = "@"; cell.fill = fill(bg)
+    mput(ws, r, 6, r, 6, x["unit"], F(9), A("center"), bg)
+    cell = ws.cell(row=r, column=7); num(cell, x["price"], "#,##0.00"); cell.fill = fill(bg)
+    cell = ws.cell(row=r, column=8); num(cell, round(x["q0"] * x["price"], 2), "#,##0.00"); cell.fill = fill(bg)
+    mput(ws, r, 9, r, 9, PRICE_BOOK.rate_on(x["bar"], P_END).source or "合同价格政策", F(8, c=DGREY), A("left", "center", True, 1), bg)
+    note = ("本期 BIP 期初为 0" if abs(x["q0"]) <= 1e-9
+            else ("初始数量与 BIP 期初数量不同，请核对" if abs(x["init"] - x["q0"]) > 1e-9 else "—"))
+    mput(ws, r, 10, r, 10, note, F(8, c=DGREY), A("left", "center", True, 1), bg)
     ws.row_dimensions[r].height = 24
     r += 1
 mput(ws, r, 1, r, 2, "合　计", F(9.5, True, WHITE), A("center"), NAVY)
-_chk_total = round(sum(round(x["price"] * x["q0"] - x["src_amt"], 2) for x in rows), 2)
-for j, v in [(3, None), (4, OPEN_VAL), (5, T["q0"]), (6, sum(x["init"] for x in rows)), (7, None), (8, None), (9, _chk_total), (10, None)]:
+for j, v in [(3, T["q0"]), (4, sum(x["init"] for x in rows)), (5, None), (6, None), (7, None), (8, OPEN_VAL), (9, None), (10, None)]:
     cell = ws.cell(row=r, column=j)
     if v is None:
         cell.value = None; cell.font = F(9, True, WHITE)
     else:
-        num(cell, v, "#,##0.00" if j in (4, 9) else "#,##0")
-        cell.font = F(9.5, True, WHITE)
+        num(cell, v, "#,##0.00" if j == 8 else "#,##0"); cell.font = F(9.5, True, WHITE)
     cell.fill = fill(NAVY); cell.border = Border(left=THIN, right=THIN, top=MED, bottom=MED)
 ws.row_dimensions[r].height = 28
 r += 2
 _init_same = all(x["init"] == x["q0"] for x in rows)
 mput(ws, r, 1, r, 10,
-     (("说明：初始数量与未结算数量在 " + str(len(rows)) + " 行中逐行相同。") if _init_same else
-      "说明：存在初始数量与未结算数量不一致的明细行（见备注列）。")
-     + (("另有 " + str(len(_jia_promo)) + " 行试用装／中小样／配赠（"
-         + format(sum(x["qty"] for x in _jia_promo), ",")
-         + " 件）不参与货款结算，未计入本表，见附表 "
-         + ("08" if V17 else "09") + "。") if _jia_promo else "")
-     + "金额校验列＝单价×数量－金额，合计为 0 表示逐行一致。",
+     (f"说明：{len(rows)} 行初始数量与 BIP 期初数量一致。" if _init_same else "说明：部分初始数量与 BIP 期初数量不同，已逐行标注。")
+     + "本表期初直接采用本次 BIP 导出，不与上期台账期末强制衔接；参考货值只按期末合同价估值，不参与货款倒挤。",
      F(8, False, DGREY), A("left", "center", True, 0))
 ws.row_dimensions[r].height = 34
 r += 2
-sec(ws, r, 1, 10, "二、数量与金额核对"); r += 1
-verify = CFG.get("verify_notes") or [
-    ("合计校验", f"{len(rows)} 行经复算：金额合计 {OPEN_VAL:,.2f} 元、数量合计 {T['q0']:,} 件，与本表合计行一致；"
-              f"逐行“单价 × 未结算数量 － 未结算金额”偏差合计 {sum(round(x['price'] * x['q0'] - x['src_amt'], 2) for x in rows):+,.2f} 元"
-              + ("（全部为 0，源表内部一致）。" if abs(sum(round(x['price'] * x['q0'] - x['src_amt'], 2) for x in rows)) < 0.01
-                 else "（存在偏差，请核对上方明细行）。")
-              + "源表无合计行，合计数系复算所得。"),
-    ("数量口径", f"“未结算数量”与“初始数量”在 {len(rows)} 行中逐行相同，该列即为本期期初铺货余额。"),
-    ("单价核对", "结算单价按双方约定的供货结算价列示。"),
+sec(ws, r, 1, 10, "二、数量与价格来源核对"); r += 1
+verify = [
+    ("数量合计", f"{len(rows)} 行 BIP 期初数量合计 {T['q0']:,} 件，与数量勾稽表一致。"),
+    ("价格来源", "正常销售按销售日合同价逐笔计算；本表期末参考价只用于盈亏和库存参考估值。"),
+    ("非结算物料", f"另有 {len(_jia_promo)} 行促销物料，不参与货款结算，见附表 {'08' if V17 else '09'}。"),
 ]
 for lab, txt in verify:
     mput(ws, r, 1, r, 2, lab, F(8.5, True, BLUE), A("center", "center", True, 0), VLBLUE)
@@ -2388,7 +2482,7 @@ cell.fill = fill(NAVY); cell.border = Border(left=THIN, right=THIN, top=MED, bot
 ws.row_dimensions[r].height = 28
 r += 2
 
-_no_sale_names = '、'.join(sorted(x['name'] for x in rows if x['q10'] == 0 and x['q0'] > 0)) or '（无）'
+_no_sale_names = '、'.join(sorted(x['name'] for x in rows if abs(x['q10']) <= 1e-9 and x['q0'] > 0)) or '（无）'
 if ADD_BACK:
     sec(ws, r, 1, 10, f"二、{NEXT_FULL}动销（回加至库存，不参与 {_d_end.month} 月结算，共 {T['q11']} 件）"); r += 1
     hdr(ws, r, 1, ["商品条码", "商品名称", "规格", "单位", f"{NEXT_LABEL}销量（件）", "", "", "", "", "占比"], 30, fl=BLUE)
@@ -2440,7 +2534,7 @@ ws.row_dimensions[3].height = 20
 ws.row_dimensions[4].height = 6
 r = 5
 hdr(ws, r, 1, ["序号", "商品名称", "商品条码", "规格", "商品分类\n（乙方系统）", "库存数量", "零售价",
-               "品牌", "结算属性", "甲方结算单价", "库存货值", "备　注"], 34)
+               "品牌", "结算属性", "期末合同参考价", "期末参考货值", "备　注"], 34)
 r += 1
 settle_by_bar = {x["bar"]: x for x in rows if x["bar"]}
 settle_by_n = {norm(x["name"]): x for x in rows}
@@ -2471,7 +2565,7 @@ for i, x in enumerate(inv_sorted, 1):
         cell.alignment = A("center"); cell.fill = fill(bg)
     note = ""
     if not st: note = "未列入甲方挂账台账，不属甲方铺货货品；归属另行确定，数量以乙方库存为准"
-    if x["qty"] == 0: note = "本期无库存"
+    if abs(x["qty"]) <= 1e-9: note = "本期无库存"
     mput(ws, r, 12, r, 12, note or "—", F(8, c=DGREY), A("left", "center", True, 1), bg)
     ws.row_dimensions[r].height = 24
     tot_q += x["qty"]
@@ -2484,7 +2578,7 @@ for j in (7, 8, 9, 10):
     cell.border = Border(left=THIN, right=THIN, top=MED, bottom=MED)
 cell = ws.cell(row=r, column=11); num(cell, round(tot_v, 2), "#,##0.00"); cell.font = F(10, True, WHITE)
 cell.fill = fill(NAVY); cell.border = Border(left=THIN, right=THIN, top=MED, bottom=MED)
-mput(ws, r, 12, r, 12, "与附表 01 ⑦ 一致", F(8, False, WHITE), A("center"), NAVY)
+mput(ws, r, 12, r, 12, "按期末合同价参考估值", F(8, False, WHITE), A("center"), NAVY)
 ws.row_dimensions[r].height = 26
 r += 1
 mput(ws, r, 1, r, 5, f"非结算类小计（{len(extra)} 个单品）", F(9.5, True, WHITE), A("center"), "7F7F7F")
@@ -2499,8 +2593,8 @@ cell.border = Border(left=THIN, right=THIN, top=MED, bottom=MED)
 mput(ws, r, 12, r, 12, "未列入甲方挂账台账", F(8, False, WHITE), A("center"), "7F7F7F")
 ws.row_dimensions[r].height = 26
 r += 2
-mput(ws, r, 1, r, 12, f"说明：{len(inv)} 个单品中 {len(inv) - len(extra)} 个为结算类（已挂账），库存货值合计 {tot_v:,.2f} 元，"
-     f"与附表 01“⑦ 期末乙方库存货值”{ACT_VAL:,.2f} 元一致；{len(extra)} 个单品共 {EXTRA_Q:,} 件未在甲方挂账，不含货值。",
+mput(ws, r, 1, r, 12, f"说明：{len(inv)} 个单品中 {len(inv) - len(extra)} 个为结算类（已挂账），期末参考货值 {tot_v:,.2f} 元，"
+     f"按期末合同价估值，不参与货款结算或差异倒挤；{len(extra)} 个单品共 {EXTRA_Q:,} 件未在甲方挂账，不作估值。",
      F(8, False, DGREY), A("left", "center", True, 0))
 ws.row_dimensions[r].height = 30
 ws.freeze_panes = "C6"
@@ -2508,16 +2602,17 @@ print("06 ok")
 
 # ==================== 07 乙方销售流水 ====================
 ws = out.create_sheet("07-乙方销售流水")
-setup(ws, [22, 15, 14, 34, 14, 9, 5, 7, 6], "landscape")
+setup(ws, [18, 14, 12, 28, 14, 9, 5, 8, 8, 9, 18, 13, 14, 28], "landscape")
 ws.row_dimensions[1].height = 10
-mput(ws, 2, 1, 2, 9, f"附 表 07　乙方 {PERIOD} 销售流水明细", F(15, True, NAVY), A("center"))
+mput(ws, 2, 1, 2, 14, f"附 表 07　乙方 {PERIOD} 销售／退货流水与取价明细", F(15, True, NAVY), A("center"))
 ws.row_dimensions[2].height = 32
-mput(ws, 3, 1, 3, 9, f"数据来源：乙方提供的 {_d_end.year} 年 {_d_end.month} 月销售流水　·　共 {len(detail)} 行 / {sum(x[7] for x in detail)} 件",
+mput(ws, 3, 1, 3, 14, f"数据来源：乙方 {_d_end.year} 年 {_d_end.month} 月流水＋合同价格政策　·　共 {len(detail)} 行 / 净数量 {sum(x[7] for x in detail)} 件　·　货款 {T['settle']:,.2f} 元",
      F(8.5, False, DGREY), A("center"))
 ws.row_dimensions[3].height = 20
 ws.row_dimensions[4].height = 6
 r = 5
-hdr(ws, r, 1, ["流水号", "销售时间", "销售门店", "商品名称", "商品条码", "规格", "单位", "销售数量", "品牌"], 32)
+hdr(ws, r, 1, ["流水号", "业务日期", "门店", "商品名称", "商品条码", "规格", "单位", "数量\n（退货为负）", "品牌",
+               "业务类型", "原销售流水号", "合同价／原销售价", "货款金额\n（元）", "取价依据"], 32)
 r += 1
 for i, d in enumerate(detail, 1):
     bg = WHITE if i % 2 else GREY
@@ -2540,13 +2635,31 @@ for i, d in enumerate(detail, 1):
     mput(ws, r, 7, r, 7, d[6], F(8.5), A("center"), bg)
     cell = ws.cell(row=r, column=8); num(cell, d[7]); cell.fill = fill(bg)
     mput(ws, r, 9, r, 9, d[8], F(8.5), A("center"), bg)
-    ws.row_dimensions[r].height = 19
+    mput(ws, r, 10, r, 10, d[9], F(8.5), A("center"), bg)
+    mput(ws, r, 11, r, 11, d[10] or "—", F(8.5), A("center"), bg)
+    cell = ws.cell(row=r, column=12)
+    if d[11] is None:
+        cell.value = "—"; cell.font = F(8.5, c=DGREY); cell.alignment = A("center")
+    else:
+        num(cell, d[11], "#,##0.00")
+    cell.fill = fill(bg)
+    cell = ws.cell(row=r, column=13)
+    if d[12] is None:
+        cell.value = "—"; cell.font = F(8.5, c=DGREY); cell.alignment = A("center")
+    else:
+        num(cell, d[12], "#,##0.00")
+    cell.fill = fill(bg)
+    mput(ws, r, 14, r, 14, d[13] or "非结算类，不计货款", F(7.5, c=DGREY), A("left", "center", True, 1), bg)
+    ws.row_dimensions[r].height = 24
     r += 1
 mput(ws, r, 1, r, 7, "合　计", F(9.5, True, WHITE), A("center"), NAVY)
 cell = ws.cell(row=r, column=8); num(cell, sum(x[7] for x in detail)); cell.font = F(10, True, WHITE)
 cell.fill = fill(NAVY); cell.border = Border(left=THIN, right=THIN, top=MED, bottom=MED)
-cell = ws.cell(row=r, column=9); cell.value = None; cell.fill = fill(NAVY)
-cell.border = Border(left=THIN, right=THIN, top=MED, bottom=MED)
+for _col in (9, 10, 11, 12, 14):
+    cell = ws.cell(row=r, column=_col); cell.value = None; cell.fill = fill(NAVY)
+    cell.border = Border(left=THIN, right=THIN, top=MED, bottom=MED)
+cell = ws.cell(row=r, column=13); num(cell, T["settle"], "#,##0.00"); cell.font = F(10, True, WHITE)
+cell.fill = fill(NAVY); cell.border = Border(left=THIN, right=THIN, top=MED, bottom=MED)
 ws.row_dimensions[r].height = 28
 r += 2
 _grp = Counter((str(d[0]).strip(), str(d[4]).strip(), d[7]) for d in detail)
@@ -2554,10 +2667,10 @@ _split = sorted({g[0] for g, n in _grp.items() if n > 1})
 if _split:
     _shown = "、".join(_split[:4]) + ("…" if len(_split) > 4 else "")
     _note = (f"核对说明：存在 {len(_split)} 组“同一流水号 + 同一条码 + 同一数量”的拆行记录"
-             f"（流水号 {_shown}），已逐行计入合计数、未作去重或调整；是否属正常拆行，请结合库存倒推结果核对。")
+             f"（流水号 {_shown}），已逐行计入合计数、未作去重或调整；是否属正常拆行，请双方核对。")
 else:
-    _note = "核对说明：流水明细未发现“同一流水号 + 同一条码 + 同一数量”的重复拆行记录；明细合计已与销售汇总核对一致。"
-mput(ws, r, 1, r, 9, _note, F(8, False, DGREY), A("left", "center", True, 0))
+    _note = "核对说明：流水明细未发现重复拆行；销售按各自销售日合同价计算，退货按原销售价冲减，金额不取绝对值。"
+mput(ws, r, 1, r, 14, _note, F(8, False, DGREY), A("left", "center", True, 0))
 ws.row_dimensions[r].height = 34
 ws.freeze_panes = "A6"
 print("07 ok")
@@ -2703,7 +2816,7 @@ _BASIS = str(CFG.get("promo_basis") or "outbound").lower()
 
 sec(ws, r, 1, 8, "一、口径说明"); r += 1
 for _t in [
-    "1. 试用装 / 中小样 / 配赠由甲方调拨出库，乙方是否入库取决于终端渠道规则，故不参与货款结算与库存恒等式。",
+    "1. 试用装 / 中小样 / 配赠由甲方调拨出库，乙方是否入库取决于终端渠道规则，故不参与货款结算与库存数量勾稽。",
     "2. 本表只列示数量，不计算金额（单价与费用口径由财务另行确认）；出库数量取甲方挂账表对应物料的「未结算数量」。",
     ("3. 乙方已提供使用数据：" + PROMO_USE_SRC + "；差异＝出库－使用。"
      if (PROMO and PROMO_USE_SRC) else
@@ -2823,6 +2936,7 @@ if V17:
                   "q0": r.get("q0", 0), "q10": r.get("q10", 0),
                   "theo": r.get("theo", 0)} for r in rows],
         "totals": {k: v for k, v in T.items()},
+        "rule_result": jsonable(RULE_RESULT),
         "batch_src": BATCH_SRC,
         "out": OUT,
         "cfg_v17": CFG.get("v17") or {},
@@ -2879,6 +2993,55 @@ if V17:
     sys.path.insert(0, _SK)
     from check_public_copy import clean_properties
     clean_properties(OUT)
+
+# 无论是否启用 V17，均输出可机读规则结果与 writeback_ledger.py 可直接消费的回写负载。
+def _write_json_atomic(path, payload):
+    _tmp = path + ".tmp"
+    with open(_tmp, "w", encoding="utf-8") as _fh:
+        json.dump(payload, _fh, ensure_ascii=False, indent=2)
+        _fh.write("\n")
+    os.replace(_tmp, path)
+
+
+import hashlib
+def _source_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as _source_fh:
+        for chunk in iter(lambda: _source_fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+with open(OUT, "rb") as _fh:
+    _workbook_sha = hashlib.sha256(_fh.read()).hexdigest()
+_WRITEBACK = {
+    "period": PERIOD, "asof": ASOF,
+    "contract_no": CONTRACT_NO, "business_type": "铺货代销", "statement_no": STATEMENT_NO,
+    "opening_qty": T["q0"], "opening_amount": OPEN_VAL,
+    "settle_qty": T["q10"], "settle_amount": SETTLEMENT_TOTAL,
+    "diff_qty": T["diff"], "diff_amount": T["diff_amt"],
+    "sticker_amount": TH_TOTAL, "sticker_pay": "待定", "status": "待确认",
+    "note": ("铺货代销；期初金额为期末合同价参考估值；盈亏按期末合同价列示，"
+             + ("经本期单次授权纳入结算总额。" if VARIANCE_INCLUDED else "未纳入本期结算总额，纳入须逐期单次授权。")),
+}
+_RESULT_PATH = os.path.join(BASE, "_结算结果.json")
+_WRITEBACK_PATH = os.path.join(BASE, "_回写.json")
+_RESULT = {
+    "schema": "dealer-ops/settlement-result@1",
+    "business_type": BUSINESS_TYPE,
+    "workbook": {"path": os.path.abspath(OUT), "sha256": _workbook_sha},
+    "rule_result": jsonable(RULE_RESULT),
+    "writeback": _WRITEBACK,
+    "writeback_path": _WRITEBACK_PATH,
+    "master": {"path": os.path.abspath(_MASTER), "sha256": _source_sha256(_MASTER)},
+    "sources": {
+        role: {"path": os.path.abspath(path), "sha256": _source_sha256(path)}
+        for role, path in (("jia", _P_JIA), ("sales", _P_OCT), ("inventory", _P_INV))
+    },
+}
+_write_json_atomic(_WRITEBACK_PATH, _WRITEBACK)
+_write_json_atomic(_RESULT_PATH, _RESULT)
 emit(f"{_OUT_LABEL} {OUT}")
 emit(f"SAVED: {OUT}")
+emit(f"RESULT: {_RESULT_PATH}")
+emit(f"WRITEBACK: {_WRITEBACK_PATH}")
 emit("大小 %.1f KB" % (os.path.getsize(OUT) / 1024))
