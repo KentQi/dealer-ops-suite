@@ -1,5 +1,10 @@
 # 会话日志(最新在上)
 
+## 2026-11-21 02:06 | model=zcode-glm-5.3-flash | task=T010 完成
+- 摘要: T010 完成：最小 CI 建立（914bac0），GitHub Actions 首跑全绿。前置修复：.relay 白名单加 .github/tools；迁移 tools/validate.py 并把 .claude-plugin 兼容层降级为存在才校验（否则合并仓第一天就红）。.github/workflows/ci.yml：单 Python 3.9（README 兼容声明下限，ubuntu-24.04）、actions 全 SHA 钉（checkout v4.2.2 / setup-python v5.6.0 / gitleaks v2，gitleaks SHA 曾被我截断后误补全，已重新拉取全量修正）、permissions contents:read、concurrency 取消旧跑；步骤=安装 requirements → compileall → pytest tests -q 统一运行器（规避 pytest 文件在 unittest discover 下 0 用例假绿）→ validate.py → gitleaks 脱敏自检。新增 tests/test_pdf_structure.py（skipUnless pymupdf，页数/可提取文本/重跑确定性），重依赖 PDF 回归走独立 workflow_dispatch 手动 job 不阻断主 CI。验证：pytest 225 passed / unittest 208 OK / validate 3 项过 / Actions run 44789288074 全步骤绿。
+- 事实(v2): mode=single | 文件 0 | ± +0/-0 | base=- | sha=- | branch=main || 验收: 未要求 | verify: PASS 12·WARN 0·ERROR 0 | 耗时: 0s
+- 留给下一个: T011 实施时必须实测：apply_v17 裁剪后产物过 A1-A6 全门禁（原始产出命中 08/09 内部附表属预期——扫描已实测，裁剪后待验证）；并核对 08/09 表名与 koujing sheet_map 对应；A5 增量冻结负向用例不可行的原因（基线是增量前备份）已在 test_public_copy_gate 以 scan(baseline=) 钉死
+
 ## 2026-11-21 01:59 | model=zcode-glm-5.3-flash | task=T009 完成
 - 摘要: T009 完成：对抗测试层整层迁移 + 六类回归钉子落地（d234f6a，+68 用例）。合同线：fill_sim/fixtures/test_attacks(12)/test_workflow(5) 迁入，verify_fill 全部走 contract_release.build_release 真凭证夹具（零代码后门）；test_contract_validators 收纳 24 校验器用例 + 6 spec 完整性检查（pytest 参数化全部以 subTest 保留）。对账线：test_public_copy_gate(13)/test_v17_gates(3)/test_deterministic_rerun(2)/test_recon_mapping(3)。迁移过程挖出并修复两个生产级真 bug：①spec region 示例「示例省/示例市」被 check_region 按设计拒绝——示例值过不了自己的校验器，已改「示例」并恢复全量哨兵零豁免；②recon_engine 01-对账单说明自带 l1 禁词「主档」——门禁会拦下引擎产出的每一张对账单，已改「客户台账」。验证：pytest 223 passed / unittest 206 OK / compileall 过；品牌 scrub 后 JL/肌侣零残留。
 - 事实(v2): mode=single | 文件 0 | ± +0/-0 | base=- | sha=- | branch=main || 验收: 未要求 | verify: PASS 12·WARN 0·ERROR 0 | 耗时: 0s
