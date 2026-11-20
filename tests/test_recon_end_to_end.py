@@ -15,6 +15,10 @@ import openpyxl
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "skills" / "dealer-ops-suite" / "scripts"
+sys.path.insert(0, str(SCRIPTS))
+
+from koujing import blank as koujing_blank, digest as koujing_digest  # noqa: E402
+
 BAR = "690000000001"
 
 
@@ -57,6 +61,19 @@ class ConsignmentWorkbookTest(unittest.TestCase):
             "库存": [["商品名称", "条码", "规格", "分类", "库存数量", "销售价", "品牌"],
                      ["脱敏商品", BAR, "10ml", "测试", 37, 100, "测试"]],
         })
+        # 口径夹具：与真实 load_master 强制问卡同构，铺货出账凭证必须携带口径绑定。
+        record = koujing_blank(scene="每月出账", period="2026-10", asof="2026-10-31",
+                               customer="脱敏测试")
+        record["confirmed_by"] = "测试"
+        record["decisions"]["usage"] = {
+            "values": {"试用装": 0},
+            "ledger": [{"name": "试用装", "kind": "试用装", "opening": 0, "shipped": 0, "used": 0}]}
+        record["internal_only"] = ["内部结算口径备注"]
+        record["config_sha256"] = koujing_digest(record)
+        self.koujing_record = record
+        self.koujing_path = self.base / "_口径确认.json"
+        self.koujing_path.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n",
+                                     encoding="utf-8")
         self.rows = [
             ["流水号", "销售时间", "门店", "商品名称", "条码", "规格", "单位", "销售数量", "品牌",
              "业务类型", "原销售流水号", "原销售单价", "原销售已计提贴花", "原销售贴花标准"],
@@ -75,6 +92,7 @@ class ConsignmentWorkbookTest(unittest.TestCase):
         wb.save(self.inventory)
         cfg = {
             "business_type": "consignment",
+            "koujing": self.koujing_record,
             "party_a": {"name": "脱敏甲方", "tax": "TEST-A"},
             "party_b": {"name": "脱敏乙方", "tax": "TEST-B"},
             "bank": {"account_name": "脱敏甲方", "account_no": "000001", "bank_name": "测试银行"},
@@ -156,6 +174,7 @@ class ConsignmentWorkbookTest(unittest.TestCase):
         from make_review_packet import PacketError, build_packet
         cfg = {
             "business_type": "consignment", "base_dir": str(self.base), "master_path": str(self.master),
+            "koujing": self.koujing_record,
             "party_a": {"name": "脱敏甲方"}, "party_b": {"name": "脱敏乙方"},
             "contract": {"no": "TEST-2026", "method": "铺货代销", "basis": "实销实结"},
             "period": {"start": "2026-10-01", "end": "2026-10-31", "asof": "2026-10-31"},
@@ -178,6 +197,43 @@ class ConsignmentWorkbookTest(unittest.TestCase):
             with self.assertRaises(PacketError):
                 build_packet(str(self.out), str(self.master))
         finally:
+            if previous is None:
+                os.environ.pop("RECON_CFG", None)
+            else:
+                os.environ["RECON_CFG"] = previous
+
+    def test_review_packet_rejects_koujing_changed_after_settlement(self):
+        # 口径绑定（复核链路 koujing_sha256）：出账后改 _口径确认.json，复核包生成必须拒绝；
+        # 正常路径下凭证与复核包都要携带口径绑定。
+        result, _writeback, _run = self.run_engine()
+        self.assertTrue(result["koujing"]["sha256"], "铺货凭证必须携带口径哈希")
+        self.assertEqual(result["koujing"]["path"], str(self.koujing_path))
+        original = self.koujing_path.read_bytes()
+        sys.path.insert(0, str(SCRIPTS))
+        from make_review_packet import PacketError, build_packet
+        cfg = {
+            "business_type": "consignment", "base_dir": str(self.base), "master_path": str(self.master),
+            "koujing": self.koujing_record,
+            "party_a": {"name": "脱敏甲方"}, "party_b": {"name": "脱敏乙方"},
+            "contract": {"no": "TEST-2026", "method": "铺货代销", "basis": "实销实结"},
+            "period": {"start": "2026-10-01", "end": "2026-10-31", "asof": "2026-10-31"},
+            "sources": {"jia": self.jia.name, "sales": self.sales.name, "inventory": self.inventory.name},
+        }
+        previous = os.environ.get("RECON_CFG")
+        os.environ["RECON_CFG"] = json.dumps(cfg, ensure_ascii=False)
+        try:
+            packet = build_packet(str(self.out), str(self.master))
+            self.assertEqual(packet["koujing"]["sha256"], result["koujing"]["sha256"])
+            # 出账后改口径：任一内容字段变化都会改变 koujing.digest
+            tampered = json.loads(original.decode("utf-8"))
+            tampered["decisions"]["settlement_basis"]["field"] = "初始数量"
+            self.koujing_path.write_text(json.dumps(tampered, ensure_ascii=False, indent=2) + "\n",
+                                         encoding="utf-8")
+            with self.assertRaises(PacketError) as ctx:
+                build_packet(str(self.out), str(self.master))
+            self.assertIn("口径", str(ctx.exception))
+        finally:
+            self.koujing_path.write_bytes(original)
             if previous is None:
                 os.environ.pop("RECON_CFG", None)
             else:
@@ -231,6 +287,7 @@ class ConsignmentWorkbookTest(unittest.TestCase):
         from make_review_packet import PacketError, build_packet
         cfg = {
             "business_type": "consignment", "base_dir": str(self.base), "master_path": str(self.master),
+            "koujing": self.koujing_record,
             "party_a": {"name": "脱敏甲方"}, "party_b": {"name": "脱敏乙方"},
             "contract": {"no": "TEST-2026", "method": "铺货代销", "basis": "实销实结"},
             "period": {"start": "2026-10-01", "end": "2026-10-31", "asof": "2026-10-31"},
@@ -286,6 +343,7 @@ class ConsignmentWorkbookTest(unittest.TestCase):
         from make_review_packet import build_packet
         cfg = {
             "business_type": "consignment", "base_dir": str(self.base), "master_path": str(self.master),
+            "koujing": self.koujing_record,
             "party_a": {"name": "脱敏甲方"}, "party_b": {"name": "脱敏乙方"},
             "contract": {"no": "TEST-2026", "method": "铺货代销", "basis": "实销实结"},
             "period": {"start": "2026-10-01", "end": "2026-10-31", "asof": "2026-10-31"},
@@ -442,6 +500,8 @@ class ConsignmentWorkbookTest(unittest.TestCase):
         cfg = {
             "business_type": "consignment", "base_dir": "/nonexistent-dir",
             "master_path": str(self.master),
+            "koujing": self.koujing_record,
+            "v17": {"enabled": False, "koujing_path": str(self.koujing_path)},
             "party_a": {"name": "脱敏甲方"}, "party_b": {"name": "脱敏乙方"},
             "contract": {"no": "TEST-2026", "method": "铺货代销", "basis": "实销实结"},
             "period": {"start": "2026-10-01", "end": "2026-10-31", "asof": "2026-10-31"},

@@ -1051,6 +1051,10 @@ def build_packet(workbook_path, master_path=None, cfg_path=None, out_path=None):
         "workbook": {"path": workbook_abs, "sha256": workbook_sha, "size": workbook_size},
         "master": master,
         "sources": sources,
+        # 口径绑定：出账凭证里的口径路径／哈希原样透传，供复核锁写入与 --check 比对；
+        # 无凭证模式或月结（凭证 koujing=null）时为 None，消费端按缺席跳过。
+        "koujing": settlement_document.get("koujing")
+        if isinstance(settlement_document, dict) else None,
         "period": period,
         "asof": asof,
         "sheets": sheets,

@@ -436,6 +436,8 @@ def main():
         "schema": "dealer-ops/settlement-result@1", "business_type": business_type,
         "workbook": {"path": os.path.abspath(out_path), "sha256": workbook_sha},
         "rule_result": jsonable(result), "writeback": writeback, "writeback_path": writeback_path,
+        # 月结链路不加载口径问卡（load_master 仅 consignment 注入 koujing），凭证显式置 null。
+        "koujing": None,
         "master": {"path": os.path.abspath(cfg["master_path"]),
                    "sha256": workbook_sha256(cfg["master_path"])},
         "sources": {role: {"path": os.path.abspath(sources[role]),

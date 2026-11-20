@@ -10,6 +10,9 @@ from decimal import Decimal
 # 保证「合计 == 逐行舍入后之和」不变式（_number 本体是 JSON 数值渲染归一器，不是舍入决策点）。
 from settlement_rules import money
 
+# 口径绑定（复核链路 koujing_sha256）：口径哈希算法只有 koujing.digest 一份实现。
+from koujing import digest as _koujing_digest
+
 
 SCHEMA = "dealer-ops/settlement-result@1"
 
@@ -52,6 +55,30 @@ def validate_settlement_inputs(document, master, sources):
         raise ValueError("本次复核主档与出账时使用的主档不是同一文件")
     if master.get("sha256") != expected_master["sha256"]:
         raise ValueError("主档在出账后已变更，原结算结果已过期；请重新出账并复核")
+
+    # 口径绑定：铺货链路出账必带口径凭证（load_master 强制问卡），复核时口径文件
+    # 必须与出账时一致——堵住「出账后、复核前改口径」窗口；月结不加载口径，缺席即跳过。
+    if document["business_type"] == "consignment":
+        expected_kj = document.get("koujing")
+        if not isinstance(expected_kj, dict) or not expected_kj.get("path") \
+                or not expected_kj.get("sha256"):
+            raise ValueError("结算结果缺少口径凭证（koujing），请重新出账")
+        if not os.path.isfile(expected_kj["path"]):
+            raise ValueError("出账时的口径确认文件已不存在（%s）；请重新出账并复核"
+                             % expected_kj["path"])
+        try:
+            with open(expected_kj["path"], encoding="utf-8") as fh:
+                record = json.load(fh)
+        except (OSError, ValueError) as exc:
+            raise ValueError("口径确认文件无法读取（%s）：%s；请重新出账并复核"
+                             % (expected_kj["path"], exc))
+        try:
+            current_kj_sha = _koujing_digest(record)
+        except Exception as exc:  # noqa: BLE001 - 记录结构异常时给出可操作的中文报错
+            raise ValueError("口径确认文件内容异常（%s）；请重走问卡门禁并重新出账" % exc)
+        if current_kj_sha != expected_kj["sha256"]:
+            raise ValueError("口径在出账后已变更（_口径确认.json 与出账凭证哈希不一致）；"
+                             "改口径必须重走问卡门禁并重新出账，不得沿用原结算结果")
 
     recorded = document.get("sources")
     if not isinstance(recorded, dict):

@@ -76,6 +76,53 @@ class ReviewGateTest(unittest.TestCase):
         check = subprocess.run([sys.executable, str(SCRIPTS / "apply_review.py"), str(self.workbook),
                                 "--check"], text=True, capture_output=True, timeout=20)
         self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
+        # 无口径键的旧格式包：锁 koujing 为 null，--check 按缺席跳过
+        self.assertIsNone(lock["koujing"])
+
+    def test_check_rejects_koujing_drift_after_apply(self):
+        # 口径绑定（复核链路 koujing_sha256）：包携带口径 → --apply 写入锁 → 改口径文件 →
+        # --check 必须拒绝交付；口径文件恢复后 --check 恢复有效。
+        sys.path.insert(0, str(SCRIPTS))
+        from koujing import blank as koujing_blank, digest as koujing_digest
+        record = koujing_blank(scene="每月出账", period="2026-10", asof="2026-10-31",
+                               customer="脱敏测试")
+        record["confirmed_by"] = "测试"
+        record["decisions"]["usage"] = {
+            "values": {"试用装": 0},
+            "ledger": [{"name": "试用装", "kind": "试用装", "opening": 0, "shipped": 0, "used": 0}]}
+        record["internal_only"] = ["内部结算口径备注"]
+        record["config_sha256"] = koujing_digest(record)
+        koujing_path = self.root / "_口径确认.json"
+        koujing_path.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n",
+                                encoding="utf-8")
+        packet = self.root / "packet-koujing.json"
+        packet.write_text(json.dumps({
+            "schema": "dealer-ops/review-packet@1", "period": self.period,
+            "workbook": {"path": str(self.workbook), "sha256": self.pre_sha},
+            "koujing": {"path": str(koujing_path), "sha256": record["config_sha256"]},
+        }, ensure_ascii=False), encoding="utf-8")
+
+        run = self.run_review("--packet", str(packet), "--apply")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        lock = json.loads((self.root / "_复核记录" / "复核锁.json").read_text(encoding="utf-8"))
+        self.assertEqual(lock["koujing"]["sha256"], record["config_sha256"])
+
+        def run_check():
+            return subprocess.run([sys.executable, str(SCRIPTS / "apply_review.py"),
+                                   str(self.workbook), "--check"],
+                                  text=True, capture_output=True, timeout=20)
+
+        self.assertEqual(run_check().returncode, 0)
+        original = koujing_path.read_bytes()
+        tampered = json.loads(original.decode("utf-8"))
+        tampered["decisions"]["settlement_basis"]["field"] = "初始数量"
+        koujing_path.write_text(json.dumps(tampered, ensure_ascii=False, indent=2) + "\n",
+                                encoding="utf-8")
+        drifted = run_check()
+        self.assertNotEqual(drifted.returncode, 0, drifted.stdout + drifted.stderr)
+        self.assertIn("口径", drifted.stderr)
+        koujing_path.write_bytes(original)
+        self.assertEqual(run_check().returncode, 0)
 
 
 if __name__ == "__main__":

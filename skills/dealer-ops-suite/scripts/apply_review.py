@@ -565,13 +565,17 @@ def _archive_report(report, archive_dir, workbook_path):
     return name + ".json", json_path
 
 
-def _write_lock(archive_dir, pre_sha, post_sha, verdict, report_name):
+def _write_lock(archive_dir, pre_sha, post_sha, verdict, report_name, koujing=None):
     lock = {
         "pre_sha256": pre_sha,
         "post_sha256": post_sha,
         "verdict": verdict,
         "report": report_name,
         "applied_at": iso_now(),
+        # 口径绑定：复核包携带的口径路径／哈希写入锁，--check 时与当前口径文件比对；
+        # 旧格式包无该键时为 None，校验按缺席跳过（兼容历史归档）。
+        "koujing": koujing if isinstance(koujing, dict) and koujing.get("path")
+        and koujing.get("sha256") else None,
     }
     path = os.path.join(archive_dir, LOCK_NAME)
     try:
@@ -622,6 +626,40 @@ def _is_idempotent(workbook_path, archive_dir, report, current_sha):
         return bool(_review_sheet_of(wb))
     finally:
         wb.close()
+
+
+def _check_koujing_lock(lock, errors):
+    """交付前口径比对：锁里绑定的口径文件必须与复核时一致（ koujing_sha256 不匹配即拒绝）。
+
+    兼容性：旧格式复核锁无 koujing 键（或为 null）时跳过——历史归档复核不受影响。
+    """
+    kj = lock.get("koujing")
+    if not isinstance(kj, dict) or not kj.get("path") or not kj.get("sha256"):
+        return
+    path = kj["path"]
+    if not os.path.isfile(path):
+        errors.append("复核锁绑定的口径确认文件已不存在：%s；口径文件与复核记录必须一并归档，"
+                      "或重新出账并重新复核" % path)
+        return
+    try:
+        with open(path, encoding="utf-8") as fh:
+            record = json.load(fh)
+        from koujing import digest as _kj_digest
+        current = _kj_digest(record)
+    except OSError as exc:
+        errors.append("无法读取复核锁绑定的口径确认文件（%s）：%s" % (path, exc))
+        return
+    except ValueError as exc:
+        errors.append("复核锁绑定的口径确认文件不是合法 JSON（%s）：%s；"
+                      "口径文件可能被手工改坏，请重新出账并重新复核" % (path, exc))
+        return
+    except Exception as exc:  # noqa: BLE001 - 记录结构异常时给出可操作的中文报错
+        errors.append("复核锁绑定的口径确认文件内容异常（%s）：%s；请重新出账并重新复核"
+                      % (path, exc))
+        return
+    if current != kj["sha256"]:
+        errors.append("口径在复核后已变更（_口径确认.json 与复核锁 koujing_sha256 不一致）；"
+                      "改口径必须重走问卡门禁并重新出账、重新复核，不得沿用原复核锁交付")
 
 
 # ---------------------------------------------------------------- --apply 落盘
@@ -738,6 +776,7 @@ def do_check(workbook_path, archive_dir):
             if not os.path.isfile(os.path.join(archive_dir, report_name)):
                 warnings.append("复核锁引用的归档报告不存在：%s"
                                 % os.path.join(archive_dir, report_name))
+        _check_koujing_lock(lock, errors)
 
     for warning in warnings:
         print("[警告] " + warning, file=sys.stderr)
@@ -879,7 +918,8 @@ def main(argv=None):
         return 1
 
     post_sha = _apply_to_workbook(workbook_path, report, current_sha, archive_name, packet_name)
-    lock, lock_path = _write_lock(archive_dir, current_sha, post_sha, verdict, archive_name)
+    lock, lock_path = _write_lock(archive_dir, current_sha, post_sha, verdict, archive_name,
+                                  koujing=packet.get("koujing") if isinstance(packet, dict) else None)
     sheet_count = _count_sheets(workbook_path)
     print("[复核记录] 已写入「%s」（工作表 %s 张）"
           % (REVIEW_SHEET, sheet_count if sheet_count is not None else "?"))

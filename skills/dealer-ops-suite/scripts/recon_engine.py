@@ -9,6 +9,7 @@ import json
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from decimal import Decimal
+import koujing
 from settlement_rules import RateBook, RuleViolation, calculate_consignment, jsonable, money, normalize_business_type
 
 # ==================== 可配置项（通过环境变量 RECON_CFG 传入 JSON）====================
@@ -3028,6 +3029,9 @@ _WRITEBACK = {
 }
 _RESULT_PATH = os.path.join(BASE, "_结算结果.json")
 _WRITEBACK_PATH = os.path.join(BASE, "_回写.json")
+_KJ = CFG.get("koujing") if isinstance(CFG.get("koujing"), dict) else {}
+_KJ_PATH = (CFG.get("v17") or {}).get("koujing_path") \
+    or (os.path.join(CFG.get("base_dir") or ".", koujing.FILENAME) if CFG.get("koujing") else "")
 _RESULT = {
     "schema": "dealer-ops/settlement-result@1",
     "business_type": BUSINESS_TYPE,
@@ -3036,6 +3040,8 @@ _RESULT = {
     "writeback": _WRITEBACK,
     "writeback_path": _WRITEBACK_PATH,
     "master": {"path": os.path.abspath(_MASTER), "sha256": _sha256_file(_MASTER)},
+    "koujing": {"path": os.path.abspath(_KJ_PATH), "sha256": str(_KJ.get("config_sha256") or "")}
+    if _KJ.get("config_sha256") and _KJ_PATH else None,
     "sources": {
         role: {"path": os.path.abspath(path), "sha256": _sha256_file(path)}
         for role, path in (("jia", _P_JIA), ("sales", _P_OCT), ("inventory", _P_INV))
