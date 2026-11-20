@@ -18,13 +18,16 @@ executionRoot 是独立检出(node_modules 等依赖需单独安装)。任务分
 (空——认领后由 relay_claim 移入;认领锁在 .relay/claims/,TTL 4 小时,崩溃会话的认领到期自动可接管)
 
 ## 待办
-- [ ] T011 出账流水线强制禁词扫描（新运行时行为）
-  验收: apply_v17 附表保存后自动跑 check_public_copy，违禁词退出1并报「对外文案门禁未通过」；e2e 负路径测试覆盖；DECISIONS 落条目
+- [ ] T012 恢复计划已全部落地，待用户指定后续
+  验收: 无强制验收；若需要可按 SPEC AC1–AC4 全量巡检（含 CI 首绿已达成）
+  备注: 恢复计划五批全部落地：T007 依赖声明(4c75605)、T008 显式披露+L6退役(97251c9)、T009 对抗测试层+六类钉子(d234f6a)、T010 最小CI(914bac0)、T011 流水线强制门禁(ebb4af2)。测试 155→227（pytest）/155→208（unittest）。历史审计的「遗留」节全部清零
 - [ ] T006 待用户指定后续方向
   验收: 无需强制验收；若用户要求可按 SPEC AC1–AC4 全量巡检
   备注: 全仓库实质遗留已清零（审计 41 项、结构性收敛 6 条、复核 F/D/C/E、文档漂移、koujing_sha256 全部闭环）；后续工作由用户指定
 
 ## 已完成
+- [x] T011 出账流水线强制禁词扫描（新运行时行为）  (2026-11-21)
+  验收: apply_v17 附表保存后自动跑 check_public_copy，违禁词退出1并报「对外文案门禁未通过」；e2e 负路径测试覆盖；DECISIONS 落条目
 - [x] T010 最小CI建立（恢复批次4）  (2026-11-21)
   验收: .relay 白名单含 .github；tools/validate.py 迁入（.claude-plugin 降级可选）；.github/workflows/ci.yml 存在（pytest统一、SHA钉、单版本、gitleaks）；GitHub Actions 首绿
 - [x] T009 迁移对抗测试层与六类回归钉子（恢复批次3）  (2026-11-21)

@@ -1,5 +1,10 @@
 # 会话日志(最新在上)
 
+## 2026-11-21 02:09 | model=zcode-glm-5.3-flash | task=T011 完成
+- 摘要: T011 完成：对外文案门禁确立为出账流水线强制环节（ebb4af2）。关键发现：apply_v17 本已内置门禁（附表保存后自动 scan，problems 非空即退出 1），但 01-对账单说明自带 l1 禁词「主档」迫使全流程 --no-gate 绕行、门禁名存实亡——T009 的措辞修复让闸门恢复实职，实测干净出账不带 --no-gate 通过全门禁（扫描 483 串 exit 0）。新增正负路径 e2e：干净出账过闸且断言门禁实扫计数>0（防静默跳过）；出账后注入禁词 → 退出 1 +「对外门禁未通过」。裁决落 DECISIONS（门禁为交付前唯一防线，--no-gate 产物不得交付）。pytest 227 passed。恢复计划五批全部闭环。
+- 事实(v2): mode=single | 文件 0 | ± +0/-0 | base=- | sha=- | branch=main || 验收: 未要求 | verify: PASS 12·WARN 0·ERROR 0 | 耗时: 0s
+- 留给下一个: 恢复计划五批全部落地：T007 依赖声明(4c75605)、T008 显式披露+L6退役(97251c9)、T009 对抗测试层+六类钉子(d234f6a)、T010 最小CI(914bac0)、T011 流水线强制门禁(ebb4af2)。测试 155→227（pytest）/155→208（unittest）。历史审计的「遗留」节全部清零
+
 ## 2026-11-21 02:06 | model=zcode-glm-5.3-flash | task=T010 完成
 - 摘要: T010 完成：最小 CI 建立（914bac0），GitHub Actions 首跑全绿。前置修复：.relay 白名单加 .github/tools；迁移 tools/validate.py 并把 .claude-plugin 兼容层降级为存在才校验（否则合并仓第一天就红）。.github/workflows/ci.yml：单 Python 3.9（README 兼容声明下限，ubuntu-24.04）、actions 全 SHA 钉（checkout v4.2.2 / setup-python v5.6.0 / gitleaks v2，gitleaks SHA 曾被我截断后误补全，已重新拉取全量修正）、permissions contents:read、concurrency 取消旧跑；步骤=安装 requirements → compileall → pytest tests -q 统一运行器（规避 pytest 文件在 unittest discover 下 0 用例假绿）→ validate.py → gitleaks 脱敏自检。新增 tests/test_pdf_structure.py（skipUnless pymupdf，页数/可提取文本/重跑确定性），重依赖 PDF 回归走独立 workflow_dispatch 手动 job 不阻断主 CI。验证：pytest 225 passed / unittest 208 OK / validate 3 项过 / Actions run 44789288074 全步骤绿。
 - 事实(v2): mode=single | 文件 0 | ± +0/-0 | base=- | sha=- | branch=main || 验收: 未要求 | verify: PASS 12·WARN 0·ERROR 0 | 耗时: 0s
