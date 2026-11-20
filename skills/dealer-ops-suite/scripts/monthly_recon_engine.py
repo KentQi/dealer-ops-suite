@@ -8,7 +8,6 @@
 默认只生成结果，不回写主档；_回写.json 交 writeback_ledger.py 复核后使用。
 """
 
-import hashlib
 import json
 import os
 import sys
@@ -20,6 +19,9 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from schema_common import (  # noqa: E402
+    ColumnAmbiguous, ColumnMissing, locate_column, normalize_barcode, sha256_file,
+)
 from settlement_rules import (  # noqa: E402
     RateBook, RuleViolation, calculate_monthly_buyout, jsonable, normalize_business_type,
 )
@@ -52,42 +54,19 @@ def load_config():
 
 
 def bar(value):
-    if value is None:
-        return ""
-    if isinstance(value, float) and value.is_integer():
-        return str(int(value))
-    text = str(value).strip()
-    return text[:-2] if text.endswith(".0") and text[:-2].isdigit() else text
+    """条码归一化：委托共享内核（None→""；整值 float→int 串；".0" 尾巴剥除）。"""
+    return normalize_barcode(value)
 
 
 def column(headers, aliases, required=True):
-    """先按完整表头匹配，再使用长别名包含匹配；同级多列命中即阻断。"""
-    import re
+    """列定位：委托共享内核 locate_column（精确优先→子串回退→泛化词守卫→多列阻断）。
 
-    def normalized(value):
-        text = re.sub(r"\s+", "", str(value or ""))
-        return re.sub(r"[(（][^)）]*[)）]", "", text)
-
-    candidates = [(index, normalized(header)) for index, header in enumerate(headers) if normalized(header)]
-    for alias in aliases:
-        target = normalized(alias)
-        hits = [index for index, header in candidates if header == target]
-        if len(hits) > 1:
-            fail(f"源表表头「{alias}」命中多列，无法唯一取数：" + str(headers))
-        if hits:
-            return hits[0]
-    for alias in aliases:
-        target = normalized(alias)
-        if target in ("数量", "销量", "时间", "日期"):
-            continue  # 泛化业务词只接受完整表头，防止命中“发货数量／发货时间”
-        hits = [index for index, header in candidates if target in header]
-        if len(hits) > 1:
-            fail(f"源表表头包含「{alias}」的列不唯一，已停止取数：" + str(headers))
-        if hits:
-            return hits[0]
-    if required:
-        fail("源表缺少列：" + "／".join(aliases) + "；实际表头：" + str(headers))
-    return None
+    fail() 文案与旧实现逐字一致（sheet_name 留空使内核前缀为「源表」），由探针逐条比对钉死。
+    """
+    try:
+        return locate_column(headers, aliases, required=required)
+    except (ColumnAmbiguous, ColumnMissing) as exc:
+        fail(str(exc))
 
 
 def read_rows(path, date_aliases):
@@ -214,11 +193,8 @@ def load_rate_book(master, sheet_name, value_aliases, required, kind):
 
 
 def workbook_sha256(path):
-    digest = hashlib.sha256()
-    with open(path, "rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    """工作簿 sha256：委托共享内核（1 MiB 分块流式摘要）。"""
+    return sha256_file(path)
 
 
 def json_write(path, value):
