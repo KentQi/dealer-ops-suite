@@ -18,12 +18,10 @@ executionRoot 是独立检出(node_modules 等依赖需单独安装)。任务分
 (空——认领后由 relay_claim 移入;认领锁在 .relay/claims/,TTL 4 小时,崩溃会话的认领到期自动可接管)
 
 ## 待办
-- [ ] T002 用户表迁移
-  验收: verify 全绿 且 `npm test` 通过
-- [ ] T003 实现登录接口
-  验收: verify 全绿 且 `npm test -- login` 通过
-- [ ] T004 对接支付回调
-  验收: verify 全绿 且 `npm test -- login` 通过
+- [ ] T001 人工合并 PR #9 并确认合并后基线
+  验收: 合并后本地跑 python3 -m unittest discover -s tests（预期 153 OK）；内容级 grep -rn BIP --include=*.py --include=*.md . 过滤对外文案词表后为 0
+  备注: PR #9 分支 fix/public-copy-sync（head 08a900b）已 rebase 到 9160aff，图与 plugin.json 与 main 零差异，只含脱敏+守卫+文档；worktree .worktrees/fix-public-copy-sync 保留待合并后清理
+(空——当前无待办。PR #9（BIP 脱敏 + 文档同步，分支 fix/public-copy-sync）等待人工合并,验收标准见 SPEC AC4;合并属人工动作,不列为 relay 任务)
 
 ## 已完成
 (空——relay_session_end 盖完成章后由引擎移入)
