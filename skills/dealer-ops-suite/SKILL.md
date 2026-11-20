@@ -2,7 +2,7 @@
 name: dealer-ops-suite
 description: 经销商全生命周期工作套件。用于商务政策与合同包审阅、主合同／防窜货附件／价格政策放行、两层客户台账与履约待办，以及铺货代销和月结买断对账、贴花、复核与回写。触发语包括“审合同／识别风险／填合同／建客户档／合同台账／对账待办”“某月对账／算应结算／核对库存／出对账单／算贴花”“月结买断／签收买断／铺货代销／实销实结”“复核出账／验收／回写台账”，以及源表结构漂移、附表和签章 PDF 需求。直接买断不进入对账引擎；订单发货与签收在业务系统完成，不在本 Skill 内执行。
 license: MIT
-compatibility: Python 3.9+，openpyxl、xlrd、pdfplumber；可选 reportlab。合同无损写入需当前 harness 的 editor_sdk／doc_* 能力；语义复核（R1–R10）由当前模型执行，脚本不调用外部模型。
+compatibility: Python 3.9+，openpyxl、xlrd、pdfplumber、python-docx、lxml；可选 reportlab（签章 PDF，缺省跳过）、Pillow（仅 PDF raster 兜底）。合同无损写入需当前 harness 的 editor_sdk／doc_* 能力；语义复核（R1–R10）由当前模型执行，脚本不调用外部模型。
 metadata:
   author: KentQi
   version: "2.0.0"

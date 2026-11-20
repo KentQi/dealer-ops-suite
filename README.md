@@ -125,12 +125,19 @@ cp -R /tmp/dealer-ops-suite/skills/dealer-ops-suite \
 ### 依赖
 
 ```bash
-python3 -m pip install openpyxl xlrd pdfplumber
-# 可选：导出矢量 PDF
+python3 -m pip install openpyxl xlrd pdfplumber python-docx lxml
+# 合同填充/验收链（scan_blanks、verify_fill）硬依赖 python-docx 与 lxml，缺装会直接退出
+# 可选：导出矢量 PDF（另需 Pillow 仅在 --engine raster 兜底时使用）
 python3 -m pip install reportlab
 ```
 
-要求 Python 3.9+。脚本不联网，不调用外部模型；L6 语义复核由当前 Agent 的模型执行。
+开发/CI 环境可一键安装锁定版本（含测试与 PDF 回归依赖）：
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
+要求 Python 3.9+。脚本不联网，不调用外部模型；语义复核（R1–R10）由当前 Agent 的模型执行。
 
 ## 配置成你自己的业务
 

@@ -1,0 +1,18 @@
+# dealer-ops-suite 开发/CI 环境依赖（两原仓 requirements 并集）
+# 注意：skill 被 clone 到 harness 时只带走 skills/dealer-ops-suite/ 子目录，
+# 运行时依赖契约以 skills/dealer-ops-suite/SKILL.md frontmatter 的 compatibility 行为准；
+# 本文件只服务 CI 与本地开发环境，不随 skill 分发。
+# 全部为本地处理，不访问网络。
+
+openpyxl>=3.1,<4          # .xlsx 读写与工作簿生成（16 个脚本）
+xlrd>=2.0,<3              # 读取旧版 .xls 导出（openpyxl 不支持 .xls）
+pdfplumber>=0.11,<1       # 从 PDF 合同抽取文本（.docx/.txt 不需要）
+python-docx>=1.2.0        # 合同链硬依赖：scan_blanks 缺它退出、verify_fill 顶层 import
+lxml>=4.9.0               # verify_fill 包级完整性校验（XML 归一化指纹）
+pytest>=7.4.0             # CI 统一测试运行器（兼容 unittest 套件）
+
+# 签章 PDF 为可选能力：导入失败只跳过 PDF（apply_v17 有明确跳过提示）
+reportlab>=4,<5; python_version < "3.10"
+reportlab>=4,<6; python_version >= "3.10"
+Pillow>=9                 # 仅 export_pdf --engine raster 位图兜底使用；vector 主路径不需要
+pymupdf>=1.24             # 仅 PDF 结构回归断言用，运行时不需要
