@@ -727,7 +727,13 @@ def main():
     print(f"残留占位符：{len(residual)} 处")
     print(f"必填项完成：{'是' if not missing_required else '否（缺 ' + str(len(missing_required)) + ' 项）'}")
     print(f"甲方固定信息：{'完整' if not fixed_missing else '缺失 ' + str(len(fixed_missing)) + ' 项'}")
-    print(f"锁定条款表：{'完整' if not locked_bad else '不一致 ' + str(len(locked_bad)) + ' 项'}")
+    if spec.get("locked_content"):
+        print(f"锁定条款表：{'完整' if not locked_bad else '不一致 ' + str(len(locked_bad)) + ' 项'}")
+    else:
+        # 公开版 fc.json 未登记锁定表：校验为 no-op，必须显式披露而不是静默「完整」，
+        # 让放行人在验收单上看见这道闸门本次没有实际比对内容。
+        print("锁定条款表：未登记（spec.locked_content 为空，本次未校验；"
+              "接真实附件一时按 docs/SANITIZATION.md 登记标准表即自动恢复逐格比对）")
     print(f"计划重编译：{'通过（与确认值逐条一致）' if not trust else '未通过'}")
 
     if missing_required:

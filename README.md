@@ -23,7 +23,7 @@ Dealer Ops Suite 把这些问题收进两条完整工作流：**填合同**与**
 | 合同包审阅 | 主合同 + 附件 + 价格政策交叉检查；输出阻断/高/中/低「需确认项」，支持合并 LLM 语义审阅 | `review_contract_package.py`、`references/合同包审阅.md` |
 | 客户主档 | 从合同抽取候选字段，生成确认页，人工逐项确认后写入客户主档 | `extract_contract.py`、`make_confirm_html.py`、`apply_contract.py` |
 | 月度对账 | 主档转配置，按铺货代销 / 月结买断两套口径计算应结算、差异、贴花，生成对账工作簿 | `load_master.py`、`recon_engine.py`、`monthly_recon_engine.py` |
-| 复核与交付 | R1–R10 LLM 语义复核（L6），复核包 + 复核锁绑定工作簿哈希 | `make_review_packet.py`、`apply_review.py`、`check_public_copy.py`、`export_pdf.py` |
+| 复核与交付 | R1–R10 LLM 语义复核，复核包 + 复核锁绑定工作簿哈希 | `make_review_packet.py`、`apply_review.py`、`check_public_copy.py`、`export_pdf.py` |
 | 政策表自检 | 六类原则性检查：同条码多行（P1）、行内与表尾门槛冲突（P2）、条码缺失或非法（P3）、价格版本缺列／缺价／缺生效日／版本冲突（P4）、价格生效断档（P5）及贴花标准原则性错误（P6）。条码列带 `.0` 尾串的数字串（Excel 浮点伪格式）按条码归一化处理，不再误报 P3（2026-11-20 行为差异） | `check_policy.py` |
 | 台账待办 | `make_todos.py` 生成本地待办（不建定时任务）；`ledger_read.py` 按台账公式计算当前应做、距截止、紧急度，公式无缓存时即时重算并标注 | `make_todos.py`、`ledger_read.py` |
 | 台账回写 | 对账交付后把期初 / 结算 / 差异 / 贴花 / 状态写回主档「期间」表；dry-run、自动备份、同期间幂等 | `writeback_ledger.py` |
@@ -192,7 +192,7 @@ python3 skills/dealer-ops-suite/scripts/scan_blanks.py \
 - 合同填充依赖你提供的 `.docx` 模板；模板改版后必须同步 `spec/*.json`。
 - 对账依赖甲方挂账、库存、销售流水三份结构化导出；扫描件不做 OCR 兜底。
 - 政策表自检只覆盖 P1–P6 六类原则性问题，不做跨客户比价、毛利测算或折扣建模。
-- L6 语义复核需要 Agent 具备文件读写与推理能力；脚本本身不调用模型。
+- 语义复核（R1–R10）需要 Agent 具备文件读写与推理能力；脚本本身不调用模型。
 
 ## License
 

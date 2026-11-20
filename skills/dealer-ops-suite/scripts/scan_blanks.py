@@ -308,6 +308,8 @@ def check_locked_content(doc, spec):
 
     scan_blanks.py 与 verify_fill.py 共用：扫描阶段用于模板漂移预警，
     验收阶段用于确认这些条款在成品里一个字都没被改。
+    locked_content 为空（公开脱敏版未登记标准表）时本函数为 no-op，
+    verify_fill 会显式披露「未登记」，不做静默通过。
     """
     out = []
     for lk in spec.get("locked_content", []):
