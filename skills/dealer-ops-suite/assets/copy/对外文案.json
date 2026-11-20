@@ -7,6 +7,10 @@
       "label": "内部系统名"
     },
     {
+      "pattern": "BIP",
+      "label": "甲方进销存系统代号"
+    },
+    {
       "pattern": ".xls",
       "label": "内部文件名"
     },

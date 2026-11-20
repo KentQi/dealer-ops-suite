@@ -110,12 +110,12 @@ class MasterWorkflowTest(unittest.TestCase):
     def test_multiple_source_files_and_monthly_pay_override_block(self):
         period = self.root / "202610"
         period.mkdir()
-        save(period / "BIP-A.xlsx", {"Sheet": [["值"], [1]]})
-        save(period / "BIP-B.xlsx", {"Sheet": [["值"], [2]]})
+        save(period / "甲方-A.xlsx", {"Sheet": [["值"], [1]]})
+        save(period / "甲方-B.xlsx", {"Sheet": [["值"], [2]]})
         run, _ = self.load_cfg()
         self.assertNotEqual(run.returncode, 0)
         self.assertIn("源文件歧义", run.stderr)
-        (period / "BIP-B.xlsx").unlink()
+        (period / "甲方-B.xlsx").unlink()
         wb = openpyxl.load_workbook(self.master)
         wb["合同"]["B2"] = "月结买断"
         wb["合同"]["E2"] = "月结买断"

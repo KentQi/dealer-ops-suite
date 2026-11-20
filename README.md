@@ -1,6 +1,6 @@
 # Dealer Ops Suite · 经销商运营全流程套件
 
-把「谈客户 → 定政策 → 签合同 → 建台账 → 月度对账」串成一条可执行的工作流。
+把「谈客户 → 定政策 → 签合同 → 建台账 → 月度对账 → 回写台账」串成一条可执行的工作流。
 
 > **公开脱敏版**：仓库中的公司、经销商、银行、税号、合同编号、金额与商品均为虚构示例。使用前请替换为你自己的合同模板、字段清单和业务口径。
 
@@ -64,6 +64,9 @@ Dealer Ops Suite 把这些问题收进两条完整工作流：**填合同**与**
 │   ├── architecture.html
 │   ├── business-workflow.html
 │   ├── SANITIZATION.md
+│   ├── reviews/
+│   │   ├── PR1-审计报告.md
+│   │   └── PR8-复核报告.md
 │   └── source/
 │       ├── architecture.json
 │       └── business-workflow.json

@@ -79,7 +79,7 @@ NUMERIC = {
     "opening_qty", "opening_amount", "settle_qty", "settle_amount",
     "diff_qty", "diff_amount", "sticker_amount",
 }
-# 期初是甲方 BIP 快照，不应为负；本期净结算与贴花允许退货冲减为负。
+# 期初是甲方快照，不应为负；本期净结算与贴花允许退货冲减为负。
 NON_NEGATIVE = {"opening_qty", "opening_amount"}
 STATUSES = {"待确认", "已确认", "已对账", "已付款", "已签回", "已收款", "待处理", "已作废"}
 PAY_MODES = {"抵扣货款", "分开支付", "待定", ""}
