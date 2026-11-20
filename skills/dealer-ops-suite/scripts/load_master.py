@@ -1,6 +1,6 @@
 """按当前期间与有效合同生成对账引擎 RECON_CFG。
 
-铺货代销读取 BIP 期初、乙方销售和库存；月结买断读取签收、退货、动销。
+铺货代销读取甲方期初、乙方销售和库存；月结买断读取签收、退货、动销。
 指定期间目录不存在即中止，不借用其他月份；多份或零份有效合同均中止。
 stdout 仅输出单行 JSON，告警和错误写 stderr。
 """
@@ -223,7 +223,7 @@ def main():
                    "sales": pick([("动销", None), ("销售", "库存")], "乙方-动销.xlsx")}
         out_name = f"{args.period}月结买断对账.xlsx"
     else:
-        sources = {"jia": pick([("挂账", None), ("BIP", None), ("期初", None)], "甲方-挂账.xls"),
+        sources = {"jia": pick([("挂账", None), ("甲方", None), ("期初", None)], "甲方-挂账.xls"),
                    "sales": pick([("销售数据", None), ("销售", "库存")], "乙方-销售数据.xlsx"),
                    "inventory": pick([("库存", None)], "乙方-库存.xlsx"),
                    "batch": pick([("效期", None), ("批次", None), ("生产日期", None)], ""),

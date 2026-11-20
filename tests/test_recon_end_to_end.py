@@ -33,7 +33,7 @@ class ConsignmentWorkbookTest(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory(prefix=".test-recon-", dir=ROOT)
         self.base = Path(self._tmp.name)
         self.master = self.base / "_主档.xlsx"
-        self.jia = self.base / "BIP期初.xlsx"
+        self.jia = self.base / "甲方期初.xlsx"
         self.sales = self.base / "乙方销售.xlsx"
         self.inventory = self.base / "乙方库存.xlsx"
         self.out = self.base / "202610铺货代销对账.xlsx"
@@ -50,7 +50,7 @@ class ConsignmentWorkbookTest(unittest.TestCase):
                      "差异数量", "差异金额", "贴花金额", "贴花兑付方式", "状态", "备注"]],
         })
         workbook(self.jia, {
-            "BIP挂账": [["商品名称", "未结算数量", "初始数量", "物料属性", "物料编码"],
+            "甲方挂账": [["商品名称", "未结算数量", "初始数量", "物料属性", "物料编码"],
                         ["脱敏商品", 100, 100, "正装", ""]],
         })
         workbook(self.inventory, {
@@ -138,7 +138,7 @@ class ConsignmentWorkbookTest(unittest.TestCase):
         originals = {path: path.read_bytes() for path in (self.jia, self.sales, self.inventory)}
         blank_sales = [list(row) for row in self.rows]
         blank_sales[1][7] = None
-        cases = ((self.jia, "BIP挂账", "B2", {}),
+        cases = ((self.jia, "甲方挂账", "B2", {}),
                  (self.sales, "10月销售", "H2", {"sales_rows": blank_sales}),
                  (self.inventory, "库存", "E2", {"inventory_qty": None}))
         for path, sheet, cell, kwargs in cases:
@@ -405,13 +405,13 @@ class ConsignmentWorkbookTest(unittest.TestCase):
         self.assertEqual(result["rule_result"]["quantity_reconciliation"][0]["net_sales_qty"], "60")
         self.assertIn("豁免 1 行", run.stdout + run.stderr)
 
-    def test_non_settlement_bip_and_inventory_do_not_need_price_or_create_variance(self):
+    def test_non_settlement_opening_and_inventory_do_not_need_price_or_create_variance(self):
         other = "690000000002"
         wb = openpyxl.load_workbook(self.master)
         wb["SKU"].append([other, "非结算赠品", "非结算赠品", "", "件", "测试", "非结算类"])
         wb.save(self.master)
         wb = openpyxl.load_workbook(self.jia)
-        wb["BIP挂账"].append(["非结算赠品", 500, 500, "正装", ""])
+        wb["甲方挂账"].append(["非结算赠品", 500, 500, "正装", ""])
         wb.save(self.jia)
         wb = openpyxl.load_workbook(self.inventory)
         wb["库存"].append(["非结算赠品", other, "", "测试", 999, 0, "测试"])

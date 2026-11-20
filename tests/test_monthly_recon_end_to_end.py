@@ -176,7 +176,7 @@ class MonthlyBuyoutWorkbookTest(unittest.TestCase):
         run, _result, _writeback = self.run_engine(expect=1)
         self.assertIn("DUPLICATE_TRANSACTION_ID", run.stderr)
 
-    def test_monthly_review_packet_has_no_bip_opening_and_keeps_detail(self):
+    def test_monthly_review_packet_has_no_opening_and_keeps_detail(self):
         cfg = self.config()
         _run, result, _writeback = self.run_engine(cfg)
         sys.path.insert(0, str(SCRIPTS))

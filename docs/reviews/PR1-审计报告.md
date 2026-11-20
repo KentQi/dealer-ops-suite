@@ -1,5 +1,7 @@
 # PR #1 审计报告（完整版）
 
+> **历史审计记录**：文中 P0/P1/P2/P3 与 N1–N7 均已在后续轮次全部修复（41/41 闭环，见第十–十二节）；本文仅作复盘留痕，不代表当前质量状态。
+
 **仓库**：`KentQi/dealer-ops-suite`
 **PR**：[#1 Implement dealer contract and reconciliation workflows](https://github.com/KentQi/dealer-ops-suite/pull/1)
 **审计对象**：`feat/dealer-ops-workflow` @ `55172f2`，基线 `main` @ `c486788`
@@ -126,7 +128,7 @@ analyse() → blocking_findings: [], summary.blocker: 0
 
 ---
 
-### P1-3【读码】非结算类 BIP 行被强制校验合同价，正常对账直接中止
+### P1-3【读码】非结算类甲方行被强制校验合同价，正常对账直接中止
 
 **位置**：`recon_engine.py:1350-1351`
 
@@ -135,7 +137,7 @@ for _bar in sorted(set(opening_by_bar) | {line["barcode"] for line in _rule_sale
     PRICE_BOOK.validate_period(_bar, P_START, P_END)
 ```
 
-`opening_by_bar` 来自全部 BIP 挂账行，**未按结算属性过滤**。若某个「非结算类」SKU（陈列、赠品、试用装）没有连续合同价，`validate_period` 抛 `RATE_COVERAGE_GAP`，整次对账中止。而文档明确说非结算类只需登记并被排除，不需要结算价。
+`opening_by_bar` 来自全部甲方挂账行，**未按结算属性过滤**。若某个「非结算类」SKU（陈列、赠品、试用装）没有连续合同价，`validate_period` 抛 `RATE_COVERAGE_GAP`，整次对账中止。而文档明确说非结算类只需登记并被排除，不需要结算价。
 
 **修复**：校验前按 `MS_BAR[bar]["attr"] == "结算类"` 过滤；非结算类只校验条码有效性。
 
@@ -354,7 +356,7 @@ P2-1 付款义务、P2-2 截断、P2-3 工作日、P2-4 斜杠日期、P2-5 表�
 | P1-1 取价列分叉 | ✅ | 新增 `settlement_rules.rate_value_column()`，两引擎共用；多列命中 → `AMBIGUOUS_RATE_COLUMN` 阻断；别名顺序差异已消除（多列即阻断，顺序不再影响结果） |
 | P1-2 政策自检漏阻断 | ⚠️ | 目标达成（裸「商品」别名已删、同列双映射守卫已加、缺条码行已阻断），但**引入 N1** |
 | P1-3 非结算类强制合同价 | ✅ | 非结算类在 `jia` 循环即剔除，不进 `opening_by_bar` → 不触发 `validate_period`；实测 exit 0 |
-| P1-4 非结算类进入勾稽 | ✅ | **实测**：BIP 500 件 + 库存 999 件非结算 SKU 下，`opening_qty=100`（未被污染）、`diff_qty=3` 不变、`settle=3100` |
+| P1-4 非结算类进入勾稽 | ✅ | **实测**：甲方 500 件 + 库存 999 件非结算 SKU 下，`opening_qty=100`（未被污染）、`diff_qty=3` 不变、`settle=3100` |
 | P1-5 销售行静默丢弃 | ⚠️ | 目标达成（缺流水号/品名 → 阻断并给行号），但**引入 N2** |
 | P1-6 回写载荷缺字段 | ✅ | `_回写.json` 补 `contract_no`/`business_type`/`statement_no`；`verify_write_provenance` 强制三者非空，`None == None` 漏洞闭合 |
 | P1-7 待办 id 撞车 | ✅ | `raw_id` 纳入 source/key_value/evidence；新测试断言全部 id 唯一 |

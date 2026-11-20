@@ -434,7 +434,7 @@ def calculate_consignment(
     sku_rows: list[dict[str, Any]] = []
     total_variance_amount = ZERO
     for bc in sorted(all_barcodes):
-        opening_qty = dec(opening.get(bc, ZERO), f"条码 {bc} BIP 期初数量")
+        opening_qty = dec(opening.get(bc, ZERO), f"条码 {bc} 甲方期初数量")
         net_qty = barcode_qty.get(bc, ZERO)
         theoretical_end = opening_qty - net_qty
         if bc not in inventory or inventory.get(bc) is None:
@@ -475,7 +475,7 @@ def calculate_consignment(
         "decal_sale_amount": money(sale_decal), "decal_return_amount": money(return_decal),
         "decal_amount": money(decal_amount), "decal_pricing_rule": "正常销售取对账期末日标准；退货按原销售标准冲减",
         "amount_reconciliation": "数量勾稽、金额分列；不存在调价价差倒挤项",
-        "opening_source": "本期甲方 BIP 导出；不强制与上期台账期末衔接",
+        "opening_source": "本期甲方导出；不强制与上期台账期末衔接",
     }
 
 
