@@ -95,7 +95,7 @@
       "where": "第一条第 1 款",
       "required": true,
       "format": "省级行政区名称，不带「省」字（模板已含）",
-      "example": "示例省",
+      "example": "示例",
       "target": {
         "kind": "para",
         "index": 35,
@@ -113,7 +113,7 @@
       "where": "第一条第 1 款",
       "required": true,
       "format": "地级市名称，不带「市」字（模板已含）",
-      "example": "示例市",
+      "example": "示例",
       "target": {
         "kind": "para",
         "index": 35,
