@@ -18,11 +18,14 @@ executionRoot 是独立检出(node_modules 等依赖需单独安装)。任务分
 (空——认领后由 relay_claim 移入;认领锁在 .relay/claims/,TTL 4 小时,崩溃会话的认领到期自动可接管)
 
 ## 待办
-- [ ] T002 合并后 Pages 构建确认
-  验收: gh api repos/KentQi/dealer-ops-suite/pages/builds/latest -q .status 为 built 后，抽查 docs/architecture.html 与 docs/business-workflow.html 与 docs/source/*.json 一致（grep 关键节点标签），且内容级 BIP 扫描维持零命中
-  备注: Pages 由 /docs 构建合并后自动触发；图源为 docs/source/*.json（9160aff 重绘版）
+- [ ] T003 按需领取后续小任务
+  验收: 候选任务清单见 docs/reviews/ 两份报告的「遗留」节；无强制验收，取任意一条落地并按 SPEC AC1–AC4 判定
+  备注: 仓库现仅剩 main（1f40188），153 tests OK，Pages 与源图一致；relay 协议文件中 BIP 提及均为政策性语境（验收行/日志/决策），非内容回潮
 
 ## 已完成
+- [x] T002 合并后 Pages 构建确认  (2026-11-21)
+  验收: gh api repos/KentQi/dealer-ops-suite/pages/builds/latest -q .status 为 built 后，抽查 docs/architecture.html 与 docs/business-workflow.html 与 docs/source/*.json 一致（grep 关键节点标签），且内容级 BIP 扫描维持零命中
+  备注: Pages 由 /docs 构建合并后自动触发；图源为 docs/source/*.json（9160aff 重绘版）
 - [x] T001 人工合并 PR #9 并确认合并后基线  (2026-11-20)
   验收: 合并后本地跑 python3 -m unittest discover -s tests（预期 153 OK）；内容级 grep -rn BIP --include=*.py --include=*.md . 过滤对外文案词表后为 0
   备注: PR #9 分支 fix/public-copy-sync（head 08a900b）已 rebase 到 9160aff，图与 plugin.json 与 main 零差异，只含脱敏+守卫+文档；worktree .worktrees/fix-public-copy-sync 保留待合并后清理

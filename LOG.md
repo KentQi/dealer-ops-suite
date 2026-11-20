@@ -1,5 +1,10 @@
 # 会话日志(最新在上)
 
+## 2026-11-21 00:18 | model=zcode-glm-5.3-flash | task=T002 完成
+- 摘要: T002 完成：PR #9 合并后 Pages 自动构建（commit 1f40188，status=built 无错误）；线上抽查架构图「本地待办」×14 在位且旧内容「月度提醒/843 行」零残留，业务图「回写台账」×5 在位，与 docs/source/*.json 一致；内容级 BIP 扫描内容面（skills/docs/README/plugin）为 0，剩余 5 处命中全部为 relay 协议文件的政策性提及（T002 验收行、会话日志、DECISIONS 决策记录），非红线回归；收尾清理完成（worktree/本地分支/过时远端引用全清，仓库仅剩 main），待推提交已全部推送。
+- 事实(v2): mode=single | 文件 0 | ± +0/-0 | base=- | sha=- | branch=main || 验收: 未要求 | verify: PASS 12·WARN 0·ERROR 0 | 耗时: 0s
+- 留给下一个: 仓库现仅剩 main（1f40188），153 tests OK，Pages 与源图一致；relay 协议文件中 BIP 提及均为政策性语境（验收行/日志/决策），非内容回潮
+
 ## 2026-11-20 23:23 | model=zcode-glm-5.3-flash | task=T001 完成
 - 摘要: T001 完成：PR #9（内部系统代号脱敏 + 文档同步）人工授权下合并（94b821b，2 commits）；本地 main 的两个 relay 接入提交 rebase 到新 main 后推送（b11149e）；合并后基线实测 153 tests OK、compileall 通过、内容级 BIP 零命中；SPEC 开放问题销项、BIP 脱敏决策落 DECISIONS、归档报告补 frontmatter（R3 绿闸拦截后修复）；worktree .worktrees/fix-public-copy-sync 合并后清理。
 - 事实(v2): mode=single | 文件 2 | ± +7/-1 | base=- | sha=- | branch=main || 验收: 未要求 | verify: PASS 12·WARN 0·ERROR 0 | 耗时: 0s
