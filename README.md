@@ -77,7 +77,7 @@ Dealer Ops Suite 把这些问题收进两条完整工作流：**填合同**与**
         │   ├── 客户主档-模板.xlsx
         │   └── copy/对外文案.json
         ├── archive/
-        │   └── SKILL-被替换版-main.md
+        │   └── SKILL-v1.0.0.md
         ├── references/
         │   ├── 客户主档设计.md
         │   ├── 合同包审阅.md
