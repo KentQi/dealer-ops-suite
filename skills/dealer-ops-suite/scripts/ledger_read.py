@@ -30,6 +30,8 @@ except ImportError:
     print("需要 openpyxl：python3 -m pip install openpyxl", file=sys.stderr)
     sys.exit(1)
 
+import workdays
+
 SHEET_NAME = "对账待办"
 
 
@@ -74,15 +76,19 @@ def to_date(v):
 
 # ---------- Excel 公式的 Python 等价实现 ----------
 
-def add_workdays(start: date, days: int) -> date:
-    """等价 Excel WORKDAY(start, days)，仅排除周六日（与台账一致，未传节假日）。"""
-    cur = start
-    remaining = days
-    while remaining > 0:
-        cur += timedelta(days=1)
-        if cur.weekday() < 5:  # 0=Mon … 4=Fri
-            remaining -= 1
-    return cur
+def add_workdays(start: date, days: int, calendar=None) -> date:
+    """工作日递推，与 make_todos 共用同一权威实现。
+
+    calendar=None 时等价 Excel WORKDAY(start, days)（仅排除周六日，与台账
+    公式一致）；提供法定节假日及调休日历时按同一日历口径计算。
+    日历未覆盖相关年份时返回 None，调用方不得给出伪精确日期。
+    """
+    due, _estimated, _note = workdays.add_workdays(start, days, calendar)
+    return due
+
+
+WORKDAY_BASIS_WITH_CALENDAR = "按法定节假日及调休日历计算工作日"
+WORKDAY_BASIS_WEEKEND_ONLY = "仅按周末计算工作日，不含法定节假日（与台账 WORKDAY 公式一致）"
 
 
 def period_to_next_month_first(period: str):
@@ -211,7 +217,7 @@ def map_cols(ws, header_row):
     return m
 
 
-def collect(ws_v, ws_f, header_row, cols, today, customer_filter=None):
+def collect(ws_v, ws_f, header_row, cols, today, customer_filter=None, calendar=None):
     items = []
     for r in range(header_row + 1, ws_v.max_row + 1):
         def cached(k):
@@ -237,10 +243,10 @@ def collect(ws_v, ws_f, header_row, cols, today, customer_filter=None):
         o_issued = norm(cached("issued"))
         p_orig = norm(cached("original"))
 
-        # 截止日链：有缓存用缓存，否则按公式算
+        # 截止日链：有缓存用缓存，否则按公式算（工作日口径由 --calendar 决定）
         f_date = to_date(cached("submit_due")) or period_to_next_month_first(period)
-        g_date = to_date(cached("issue_due")) or (add_workdays(f_date, 5) if f_date else None)
-        h_date = to_date(cached("confirm_due")) or (add_workdays(g_date, 5) if g_date else None)
+        g_date = to_date(cached("issue_due")) or (add_workdays(f_date, 5, calendar) if f_date else None)
+        h_date = to_date(cached("confirm_due")) or (add_workdays(g_date, 5, calendar) if g_date else None)
         i_date = to_date(cached("collect_due")) or next_month_day(period, pay_day)
 
         # 当前应做 / 距截止 / 紧急度
@@ -291,7 +297,15 @@ def main():
     ap.add_argument("--ledger", required=True, help="台账 xlsx 路径")
     ap.add_argument("--customer", help="只看某家（模糊匹配）")
     ap.add_argument("--json", action="store_true", help="输出 JSON")
+    ap.add_argument("--calendar", help="法定节假日与调休日历 JSON；提供后工作日按同一日历口径计算")
     args = ap.parse_args()
+
+    try:
+        calendar = workdays.load_calendar(args.calendar)
+    except workdays.CalendarError as e:
+        print(f"[无法解析] {e}", file=sys.stderr)
+        return 1
+    workday_basis = (WORKDAY_BASIS_WITH_CALENDAR if calendar else WORKDAY_BASIS_WEEKEND_ONLY)
 
     try:
         wb_v = openpyxl.load_workbook(args.ledger, data_only=True)
@@ -312,7 +326,7 @@ def main():
 
     cols = map_cols(ws_v, header_row)
     today = date.today()
-    items = collect(ws_v, ws_f, header_row, cols, today, args.customer)
+    items = collect(ws_v, ws_f, header_row, cols, today, args.customer, calendar)
 
     pending = [i for i in items if i["todo"] and i["todo"] != "已完成"]
     overdue = [i for i in pending if i["urgency"] == "逾期"]
@@ -323,6 +337,7 @@ def main():
         "sheet": SHEET_NAME,
         "as_of": today.isoformat(),
         "value_source": "部分列为公式，已按台账规则即时计算（文件无缓存）" if computed else "Excel 缓存",
+        "workday_basis": workday_basis,
         "stats": {"total": len(items), "pending": len(pending), "overdue": len(overdue)},
         "items": items,
     }
@@ -336,6 +351,7 @@ def main():
     print(f"共 {len(items)} 行：待处理 {len(pending)}，逾期 {len(overdue)}")
     if computed:
         print("注：本文件的公式列无缓存值，以下「当前应做/距截止」按台账规则即时计算。")
+    print(f"工作日口径：{workday_basis}。")
     print()
 
     if not items:

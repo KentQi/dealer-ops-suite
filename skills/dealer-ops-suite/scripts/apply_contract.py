@@ -3,12 +3,14 @@
 默认 dry-run：只打印「现值 → 新值」差异，不落盘；确认无误后加 --write 才写入。
 
 用法：
-    python3 apply_contract.py _主档.xlsx 合同候选.json           # 预览
-    python3 apply_contract.py _主档.xlsx 合同候选.json --write   # 落盘
+    python3 apply_contract.py _主档.xlsx 合同候选.json           # 仅预览
+    python3 apply_contract.py _主档.xlsx 合同确认单.json --write   # 确认后落盘
 
 规则：
+- 普通候选 JSON 只能 dry-run；--write 只接受确认页提交的 contract-confirm/v1 确认单。
+- 正式确认单必须有非空 meta.operator；--confirmed-by 和 --force 均不能替代 A3 人工逐项确认。
 - 只写非空值；候选为空一律跳过，绝不把已有内容清空。
-- 已有值且与新值不同 → 记为「冲突」，默认不覆盖；需显式 --force。
+- 已有值且与新值不同 → 记为「冲突」，默认不覆盖；已确认冲突需显式 --force。
 - 幂等：同一份 JSON 重复执行不产生变化。
 """
 import sys, json, argparse, shutil, os, re, base64, hashlib
@@ -148,6 +150,8 @@ def main():
     ap.add_argument("candidate")
     ap.add_argument("--write", action="store_true")
     ap.add_argument("--force", action="store_true")
+    # 仅兼容旧命令以给出明确拒绝；确认人参数不再构成主档写入授权。
+    ap.add_argument("--confirmed-by", help=argparse.SUPPRESS)
     a = ap.parse_args()
 
     try:
@@ -165,6 +169,10 @@ def main():
     if confirmed and not str(meta.get("operator") or "").strip():
         sys.exit("[中止] 确认单缺少确认人（meta.operator 为空）。留档必须有责任人，"
                  "请在确认页填写姓名后重新提交。")
+    if a.write and not confirmed:
+        sys.exit("[中止] 普通候选 JSON 只能 dry-run，不能写入主档。"
+                 "必须先完成 A3 确认页逐项确认，并提交带 meta.operator 的正式确认单；"
+                 "--confirmed-by 与 --force 均不能替代人工逐项确认。")
     fields = data.get("fields", [])
     if not fields:
         print("[提醒] 该文件不含任何字段（fields 为空）。")

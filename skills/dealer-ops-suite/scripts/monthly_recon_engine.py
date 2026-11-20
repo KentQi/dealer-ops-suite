@@ -32,6 +32,15 @@ def fail(message):
     raise SystemExit("[中止] " + str(message))
 
 
+_REAL_OUT = sys.stdout
+sys.stdout = sys.stderr          # 与铺货引擎一致：过程输出走 stderr；成功交付行走 emit 到 stdout
+
+
+def emit(msg=""):
+    _REAL_OUT.write(str(msg) + "\n")
+    _REAL_OUT.flush()
+
+
 def load_config():
     try:
         cfg = json.loads(os.environ.get("RECON_CFG", ""))
@@ -165,7 +174,22 @@ def parse_bool(value, path, row_number):
     fail(f"{path} 第 {row_number} 行原销售是否计提贴花只能填是／否")
 
 
-def load_rate_book(master, sheet_name, value_aliases, required):
+def master_sheet_name(mapping, name):
+    """主档工作表名：_数据映射.json 的 master.sheets 声明了改名时用实际名（与铺货引擎同一口径）。"""
+    if not isinstance(mapping, dict):
+        return name
+    master_map = mapping.get("master")
+    if not isinstance(master_map, dict):
+        return name
+    declared = master_map.get("sheets")
+    if not isinstance(declared, dict):
+        return name
+    return {str(canonical): str(actual) for actual, canonical in declared.items()}.get(name, name)
+
+
+def load_rate_book(master, sheet_name, value_aliases, required, kind):
+    from settlement_rules import rate_value_column
+
     if sheet_name not in master.sheetnames:
         if required:
             fail("主档缺少「" + sheet_name + "」表")
@@ -173,7 +197,7 @@ def load_rate_book(master, sheet_name, value_aliases, required):
     ws = master[sheet_name]
     headers = [cell.value for cell in ws[1]]
     ci_bar = column(headers, ("商品条码", "条码"))
-    ci_value = column(headers, value_aliases)
+    ci_value = rate_value_column(headers, value_aliases, sheet_name)
     ci_start = column(headers, ("生效起",))
     ci_end = column(headers, ("生效止",), False)
     ci_source = column(headers, ("依据文件",), False)
@@ -186,7 +210,7 @@ def load_rate_book(master, sheet_name, value_aliases, required):
                      "source": values[ci_source] if ci_source is not None else ""})
     if required and not rows:
         fail("主档「" + sheet_name + "」没有有效价格记录")
-    return RateBook(rows, kind="合同价" if sheet_name == "价格" else "贴花标准")
+    return RateBook(rows, kind=kind)
 
 
 def workbook_sha256(path):
@@ -274,13 +298,20 @@ def main():
         receipts = rows_of(sources["receipts"], "receipts")
         returns = rows_of(sources["returns"], "returns", parse_bool)
         sales = rows_of(sources["sales"], "sales")
+        mapping = cfg.get("mapping")
+        if mapping is not None and (not isinstance(mapping, dict)
+                                    or mapping.get("schema") not in (None, "dealer-ops/data-mapping@1")):
+            fail("RECON_CFG.mapping 不支持：" + repr(mapping.get("schema") if isinstance(mapping, dict) else mapping))
         master = openpyxl.load_workbook(cfg["master_path"], data_only=True)
-        prices = load_rate_book(master, "价格", ("结算价", "合同价", "供货价"), True)
-        decals = load_rate_book(master, "贴花", ("贴花标准",), False)
+        prices = load_rate_book(master, master_sheet_name(mapping, "价格"),
+                                ("供货价", "结算价", "合同价"), True, "合同价")
+        decals = load_rate_book(master, master_sheet_name(mapping, "贴花"),
+                                ("贴花标准",), False, "贴花标准")
         names, attributes = {}, {}
-        if "SKU" not in master.sheetnames:
+        sku_sheet = master_sheet_name(mapping, "SKU")
+        if sku_sheet not in master.sheetnames:
             fail("主档缺少 SKU 表；不得默认全部按结算类处理")
-        ws = master["SKU"]
+        ws = master[sku_sheet]
         headers = [cell.value for cell in ws[1]]
         ci_bar = column(headers, ("商品条码", "条码"))
         ci_name = column(headers, ("标准品名", "商品名称", "品名"), False)
@@ -417,6 +448,7 @@ def main():
         "diff_qty": 0, "diff_amount": 0,
         "sticker_amount": float(result["decal_amount"]), "sticker_pay": "待定", "status": "待确认",
         "contract_no": contract.get("no") or "", "business_type": "月结买断",
+        "statement_no": str(cfg.get("statement_no") or "").strip(),
         "buyout_date": result["buyout_date"], "payment_due_date": result["payment_due_date"],
         "note": f"月结买断；买断日 {result['buyout_date']}；付款截止日 {result['payment_due_date']}；动销只计算贴花。",
     }
@@ -434,9 +466,9 @@ def main():
                            "sha256": workbook_sha256(sources[role])}
                     for role in ("receipts", "returns", "sales")},
     })
-    print("SAVED: " + out_path)
-    print("RESULT: " + result_path)
-    print("WRITEBACK: " + writeback_path)
+    emit("SAVED: " + out_path)
+    emit("RESULT: " + result_path)
+    emit("WRITEBACK: " + writeback_path)
 
 
 if __name__ == "__main__":

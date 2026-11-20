@@ -165,7 +165,7 @@
       "col": 5,
       "type": "messagebus",
       "label": "生成待办",
-      "sublabel": "引用 Skill 自动触发",
+      "sublabel": "由 make_todos.py 生成本地待办",
       "yOffset": 96
     },
     {
@@ -174,7 +174,7 @@
       "col": 5,
       "type": "backend",
       "label": "对账工作",
-      "sublabel": "进入待办节点后执行",
+      "sublabel": "用户查看 _待办.json 后执行",
       "tag": "B 段全流程"
     }
   ],
@@ -274,19 +274,19 @@
     },
     {
       "dot": "amber",
-      "title": "对账能力",
+      "title": "待办与对账",
       "items": [
-        "进入待办节点后调用 dealer-ops-suite 的 B 段",
+        "查看 _待办.json 后按需调用 dealer-ops-suite 对账流程",
         "原对账工作流完整保留",
         "对账完成后 B5 回写主档「期间」表"
       ]
     },
     {
       "dot": "violet",
-      "title": "自动化",
+      "title": "待办边界",
       "items": [
-        "月度提醒每月 1 日 09:00 触发",
-        "本期无逾期也发送无需处理提示"
+        "不创建定时任务或自动推送",
+        "待办只写入本地 _待办.json，由用户查看并执行"
       ]
     }
   ]

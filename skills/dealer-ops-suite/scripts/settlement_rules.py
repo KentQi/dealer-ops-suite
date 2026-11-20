@@ -42,11 +42,20 @@ def dec(value: Any, label: str = "数值") -> Decimal:
         raise RuleViolation("INVALID_NUMBER", f"{label}不是有效数字：{value!r}", value=value) from exc
     if not result.is_finite():
         raise RuleViolation("INVALID_NUMBER", f"{label}不得为 NaN 或无穷大", value=value)
+    if result == result.to_integral_value():
+        result = result.quantize(Decimal(1))  # 60.0 → 60，JSON 序列化不带多余小数点
     return result
 
 
 def money(value: Any) -> Decimal:
     return dec(value).quantize(CENT, rounding=ROUND_HALF_UP)
+
+
+def _q(value):
+    """数量归一：整数值不带小数指数（Decimal('0.0') → Decimal('0')），实数原样保留。"""
+    if isinstance(value, Decimal) and value == value.to_integral_value():
+        return value.quantize(Decimal(1))
+    return value
 
 
 def positive_qty(value: Any, label: str = "数量") -> Decimal:
@@ -97,6 +106,39 @@ def normalize_business_type(value: Any) -> str:
     if result == "direct_buyout":
         raise RuleViolation("DIRECT_BUYOUT_NOT_RECONCILED", "直接买断在发货签收时完成销售，不进入铺货／月结对账引擎")
     return result
+
+
+def rate_value_column(headers: Iterable[Any], aliases: Iterable[str], sheet_name: str) -> int:
+    """两种对账引擎共用的价格／贴花列定位。
+
+    只接受去掉空白及括号单位后的完整表头匹配，避免命中“原结算价”等
+    其他业务列。多个价格列同时存在时无法判断权威来源，必须阻断。
+    """
+    import re
+
+    def normalized(value: Any) -> str:
+        text = re.sub(r"\s+", "", str(value or ""))
+        return re.sub(r"[(（][^)）]*[)）]", "", text)
+
+    candidates = [(index, normalized(header)) for index, header in enumerate(headers)
+                  if normalized(header)]
+    hits = set()
+    for alias in aliases:
+        target = normalized(alias)
+        hits.update(index for index, header in candidates if header == target)
+    if len(hits) > 1:
+        actual = "、".join(str(list(headers)[index]) for index in sorted(hits))
+        raise RuleViolation(
+            "AMBIGUOUS_RATE_COLUMN",
+            f"主档「{sheet_name}」同时存在多个价格／标准列：{actual}；不得任选一列，请只保留一个权威列",
+            columns=sorted(hits),
+        )
+    if not hits:
+        raise RuleViolation(
+            "MISSING_RATE_COLUMN",
+            f"主档「{sheet_name}」缺少列：{'／'.join(aliases)}",
+        )
+    return next(iter(hits))
 
 
 @dataclass(frozen=True)
@@ -217,13 +259,33 @@ def _original_price(
     return prices.rate_on(original_barcode, original_day).value, "按原销售日期匹配合同价"
 
 
+def _first_present(*values: Any) -> Any:
+    """取第一个非空（非 None、非空白字符串）值；引擎常显式传 None，不能挡住后续兜底。"""
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        return value
+    return None
+
+
 def _original_decal(
     line: Mapping[str, Any],
     original: Optional[Mapping[str, Any]],
     decals: RateBook,
+    current_period_standard: Optional[Decimal] = None,
 ) -> tuple[Decimal, bool, str]:
+    """退货贴花冲减依据的优先级：
+
+    1. 退货行明确登记的标准／计提状态；
+    2. 可追溯原销售行的实际计提标准（本期原销售按实际计提标准；
+       跨期历史流水按登记字段，缺失才按原销售日期政策兜底）；
+    3. 证据不足一律阻断，不默认冲减或不冲减。
+    """
     source = original if original is not None else line
-    charged = line.get("original_decal_charged", source.get("decal_charged", source.get("原销售已计提贴花")))
+    charged = _first_present(line.get("original_decal_charged"),
+                             source.get("decal_charged"), source.get("原销售已计提贴花"))
     if original is not None and barcode_of(line.get("barcode", line.get("商品条码"))) != barcode_of(
             original.get("barcode", original.get("商品条码"))):
         raise RuleViolation("ORIGINAL_BARCODE_MISMATCH", "退货条码与原销售贴花流水条码不一致，已停止贴花冲减")
@@ -233,6 +295,9 @@ def _original_decal(
             charged = True
         elif normalized in ("否", "未计提", "false", "0", "无"):
             charged = False
+    if charged is None and current_period_standard is not None:
+        # 本期原销售确定已按期末标准计提，退货按同一标准冲减，与货款口径相互独立。
+        charged = True
     if charged not in (True, False, 0, 1) or isinstance(charged, str):
         raise RuleViolation(
             "ORIGINAL_DECAL_UNKNOWN",
@@ -241,8 +306,12 @@ def _original_decal(
         )
     if not bool(charged):
         return ZERO, False, "原销售未计提贴花"
-    standard = line.get("original_decal_standard", source.get("decal_standard", source.get("原销售贴花标准")))
-    if standard not in (None, ""):
+    standard = _first_present(line.get("original_decal_standard"),
+                              source.get("decal_standard"), source.get("原销售贴花标准"),
+                              current_period_standard)
+    if standard is not None:
+        if standard is current_period_standard:
+            return current_period_standard, True, "按本期原销售实际计提的贴花标准冲减"
         return dec(standard, "原销售贴花标准"), True, "原销售贴花标准有明确登记"
     if original is None:
         raise RuleViolation("ORIGINAL_DECAL_UNKNOWN", "退货缺少原销售贴花标准或原销售流水", line=dict(line))
@@ -309,6 +378,7 @@ def calculate_consignment(
     include_variance = _variance_authorized(start, end, variance_authorization)
     current_sales = list(sales)
     _index_originals(current_sales, "id")  # 本期销售／退货流水号不得重复
+    current_sale_keys = _index_originals([x for x in current_sales if _line_kind(x, "sale") == "sale"], "id")
     originals = _index_originals(list(original_sales) + [x for x in current_sales if _line_kind(x, "sale") == "sale"], "id")
     priced_lines: list[dict[str, Any]] = []
     barcode_qty: dict[str, Decimal] = {}
@@ -350,7 +420,10 @@ def calculate_consignment(
             return_amount += amount
             original_id = ref
             if decals is not None:
-                standard, charged, _ = _original_decal(line, original, decals)
+                # 本期原销售按期末标准实际计提；退货按同一标准冲减，期中调标不留残值。
+                current_standard = (money(decals.rate_on(bc, end).value)
+                                  if ref and ref in current_sale_keys else None)
+                standard, charged, _ = _original_decal(line, original, decals, current_standard)
                 if charged:
                     line_decal_standard = standard
                     line_decal_amount = money(-qty * standard)
@@ -387,10 +460,10 @@ def calculate_consignment(
             total_variance_amount += variance_amount
             status = "账实相符" if shortage == 0 else ("短缺·待双方核对" if shortage > 0 else "盘盈·待双方核对")
         sku_rows.append({
-            "barcode": bc, "opening_qty": opening_qty, "net_sales_qty": net_qty,
-            "theoretical_end_qty": theoretical_end, "inventory_qty": actual,
-            "addback_qty": dec((addback or {}).get(bc, ZERO)), "adjusted_actual_qty": adjusted,
-            "variance_qty": shortage, "variance_display_amount": variance_amount,
+            "barcode": bc, "opening_qty": _q(opening_qty), "net_sales_qty": _q(net_qty),
+            "theoretical_end_qty": _q(theoretical_end), "inventory_qty": _q(actual),
+            "addback_qty": _q(dec((addback or {}).get(bc, ZERO))), "adjusted_actual_qty": _q(adjusted),
+            "variance_qty": _q(shortage), "variance_display_amount": variance_amount,
             "status": status,
         })
 

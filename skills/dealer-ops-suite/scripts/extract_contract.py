@@ -136,6 +136,7 @@ def extract(path):
     if not v:
         v, ev, _ = find(lines, r"(DM-[A-Z]+-\d{4}-\d+)")
     add("合同编号", v, ev, target="合同.合同编号")
+    contract_no = str(v or "").strip()
 
     # 双方名称
     v, ev, _ = find(lines, r"(?:供货商|供货方|甲方)[：:\s]*([^\s，,\n]{2,40}?(?:有限公司|股份有限公司|合伙企业|个体工商户))")
@@ -233,6 +234,14 @@ def extract(path):
     # 价格附件
     v, ev, _ = find(lines, r"(?:供货价格|价格)[^\n]{0,20}?(?:详见|见)[^\n。]{2,40}")
     add("价格依据", v, ev, conf="待核", target="合同.价格附件")
+
+    # 多合同主档不能只靠字段名定位。合同编号一旦识别成功，所有合同字段
+    # 都绑定同一份合同；确认页还会按用户最终确认的编号重新绑定一次。
+    if contract_no:
+        for field in out:
+            target = field.get("target", "")
+            if target.startswith("合同.") and target != "合同.合同编号" and "@合同编号=" not in target:
+                field["target"] = target + "@合同编号=" + contract_no
 
     needs_ocr = bool(os.path.splitext(path)[1].lower() == ".pdf" and PDF_PAGES and len(lines) < 15)
     missing = [f["field"] for f in out if not f["value"]]

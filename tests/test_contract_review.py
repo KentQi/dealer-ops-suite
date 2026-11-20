@@ -68,6 +68,42 @@ class PolicyTest(unittest.TestCase):
         self.assertIn("P1", self.codes(result))
         self.assertTrue(result["blocking_findings"])
 
+    def test_missing_barcode_with_valid_name_and_price_is_blocked(self):
+        result = self.analyse([[None, "商品", 50, "2026-10-01", None]])
+        self.assertEqual(result["data_rows"], 1)
+        self.assertEqual(result["columns"]["name"], 2)
+        missing = [item for item in result["blocking_findings"] if item["type"] == "条码为空"]
+        self.assertEqual(len(missing), 1)
+        self.assertEqual(missing[0]["name"], "商品")
+
+    def test_one_header_cannot_map_to_two_fields(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["商品条码", "商品名称", "结算价", "生效起"])
+        original = check_policy.COL_ALIASES["name"]
+        check_policy.COL_ALIASES["name"] = ("商品",)
+        try:
+            with self.assertRaisesRegex(ValueError, "同时映射"):
+                check_policy.map_columns(ws, 1)
+        finally:
+            check_policy.COL_ALIASES["name"] = original
+
+    def test_multiple_price_columns_are_blocked_like_recon_engines(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["商品条码", "商品名称", "供货价", "结算价", "生效起", "生效止"])
+        with self.assertRaisesRegex(check_policy.PolicyColumnError, "不得任选一列"):
+            check_policy.map_columns(ws, 1)
+
+    def test_footer_text_in_note_or_source_column_does_not_block(self):
+        headers = ["商品条码", "商品名称", "结算价", "生效起", "生效止", "依据文件", "备注"]
+        result = self.analyse([
+            [BAR, "商品", 50, "2026-10-01", None, None, None],
+            [None, None, None, None, None, "表尾版本说明", "累计与起订条件说明"],
+        ], headers)
+        self.assertEqual(result["data_rows"], 1)
+        self.assertEqual(result["needs_confirmation"], [])
+
 
 class ReleaseTest(unittest.TestCase):
     def setUp(self):
@@ -152,6 +188,18 @@ class ReleaseTest(unittest.TestCase):
         run = self.command(self.root / "审阅.json", self.release_args())
         self.assertNotEqual(run.returncode, 0)
         self.assertIn("阻断", run.stderr)
+
+    def test_normal_review_keeps_policy_blocker_and_exits_2(self):
+        # P2-7：普通审阅不得把政策 blocker 降级成 high；必须显示阻断并以 2 退出
+        wb = openpyxl.load_workbook(self.policy)
+        wb.active.append([BAR, "商品", 55, "2026-10-01", None])
+        wb.save(self.policy)
+        out = self.root / "审阅.json"
+        run = self.command(out)
+        self.assertEqual(run.returncode, 2, run.stdout + run.stderr)
+        result = json.loads(out.read_text(encoding="utf-8"))
+        self.assertGreaterEqual(result["summary"]["blocker"], 1)
+        self.assertIn("阻断", run.stdout)
 
 
 if __name__ == "__main__":

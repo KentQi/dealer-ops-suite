@@ -13,7 +13,13 @@ from pathlib import Path
 
 import openpyxl
 
-from tests.test_recon_end_to_end import BAR, ROOT, SCRIPTS, workbook
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPTS = ROOT / "skills" / "dealer-ops-suite" / "scripts"
+sys.path.insert(0, str(SCRIPTS))
+try:
+    from tests.test_recon_end_to_end import BAR, workbook  # 作为包内测试运行
+except ImportError:  # 按单文件直接运行时 tests 不是包
+    from test_recon_end_to_end import BAR, workbook
 
 
 class MonthlyBuyoutWorkbookTest(unittest.TestCase):
@@ -76,6 +82,20 @@ class MonthlyBuyoutWorkbookTest(unittest.TestCase):
         with open(self.base / "_回写.json", encoding="utf-8") as fh:
             writeback = json.load(fh)
         return run, result, writeback
+
+    def test_master_sheet_mapping_is_honored(self):
+        # P2-5：_数据映射.json 的 master.sheets（实际表名 → 规范表名）在月结链路与铺货一致生效
+        wb = openpyxl.load_workbook(self.master)
+        for old, new in (("价格", "价格表"), ("贴花", "贴花表"), ("SKU", "商品档案")):
+            wb[old].title = new
+        wb.save(self.master)
+        cfg = self.config()
+        cfg["mapping"] = {"schema": "dealer-ops/data-mapping@1",
+                          "master": {"sheets": {"价格表": "价格", "贴花表": "贴花", "商品档案": "SKU"}}}
+        _run, result, writeback = self.run_engine(cfg=cfg)
+        self.assertEqual(result["rule_result"]["buyout_qty"], "60")
+        self.assertEqual(result["rule_result"]["buyout_amount"], "3100.00")
+        self.assertEqual(writeback["settle_amount"], 3100)
 
     def test_decoy_shipment_quantity_does_not_override_receipt_quantity(self):
         wb = openpyxl.load_workbook(self.receipts)
@@ -181,6 +201,26 @@ class MonthlyBuyoutWorkbookTest(unittest.TestCase):
         self.assertEqual(packet["sku_rows"][0]["sales_qty_for_decal_only"], 15)
         self.assertEqual(packet["rule_result"], result["rule_result"])
         self.assertEqual({row["role"] for row in packet["sources"]}, {"receipts", "returns", "sales"})
+
+    def test_multiple_price_columns_are_blocked(self):
+        wb = openpyxl.load_workbook(self.master)
+        ws = wb["价格"]
+        ws.cell(1, 6).value = "供货价"
+        for row in range(2, ws.max_row + 1):
+            ws.cell(row, 6).value = 999
+        wb.save(self.master)
+        run, _result, _writeback = self.run_engine(expect=1)
+        self.assertIn("AMBIGUOUS_RATE_COLUMN", run.stderr)
+        self.assertIn("不得任选一列", run.stderr)
+
+    def test_statement_no_is_preserved_in_both_writeback_payloads(self):
+        cfg = self.config()
+        cfg["statement_no"] = "DJ-M-202610-01"
+        _run, result, writeback = self.run_engine(cfg)
+        self.assertEqual(writeback["statement_no"], "DJ-M-202610-01")
+        self.assertEqual(result["writeback"], writeback)
+        self.assertEqual(writeback["contract_no"], "TEST-M-2026")
+        self.assertEqual(writeback["business_type"], "月结买断")
 
     def test_missing_dates_and_original_receipt_are_blocked(self):
         cfg = self.config()

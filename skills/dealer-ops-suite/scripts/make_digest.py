@@ -50,12 +50,11 @@ def main():
 
     pa = next((p for p in parties if str(p.get("角色", "")).strip() == "甲方"), {})
     pb = next((p for p in parties if str(p.get("角色", "")).strip() == "乙方"), {})
-    ct = contracts[0] if contracts else {}
 
     today = datetime.date.today().strftime("%Y-%m-%d")
     L = []
     L.append(f"# 合同关键信息摘要\n")
-    L.append(f"> 来源：`{os.path.basename(a.master)}`　生成日期：{today}　本摘要为对账作业的取数依据\n")
+    L.append(f"> 来源：`{os.path.basename(a.master)}`　生成日期：{today}　本摘要仅供人工核对与归档，对账直接读取主档\n")
 
     L.append("## 一、缔约主体\n")
     L.append("| 项目 | 甲方（供货方） | 乙方（代销方） |")
@@ -65,16 +64,21 @@ def main():
     L.append("")
 
     L.append("## 二、结算安排\n")
-    L.append("| 项目 | 内容 |")
-    L.append("|---|---|")
-    for key in ["合同编号", "起始", "终止", "结算方式", "结算基数", "付款日", "异议期(工作日)", "签回期(工作日)", "价格附件", "备注"]:
-        v = ct.get(key)
-        if key in ("起始", "终止"):
-            v = fmt_date(v)
-        L.append(f"| {key} | {v if v not in (None, '') else '—'} |")
-    if pa.get("开户行") or pa.get("账号"):
-        L.append(f"| 收款账户 | {pa.get('开户行') or ''}　{pa.get('账号') or ''}　户名：{pa.get('户名') or pa.get('名称') or ''} |")
-    L.append("")
+    for index, ct in enumerate(contracts or [{}], 1):
+        if len(contracts) > 1:
+            L.append(f"### {ct.get('合同编号') or ('合同 %d' % index)}\n")
+        L.append("| 项目 | 内容 |")
+        L.append("|---|---|")
+        keys = ["合同编号", "业务类型", "起始", "终止", "结算方式", "结算基数", "付款日",
+                "买断日", "付款截止日", "异议期(工作日)", "签回期(工作日)", "价格附件", "备注"]
+        for key in keys:
+            v = ct.get(key)
+            if key in ("起始", "终止", "买断日", "付款截止日"):
+                v = fmt_date(v)
+            L.append(f"| {key} | {v if v not in (None, '') else '—'} |")
+        if index == 1 and (pa.get("开户行") or pa.get("账号")):
+            L.append(f"| 收款账户 | {pa.get('开户行') or ''}　{pa.get('账号') or ''}　户名：{pa.get('户名') or pa.get('名称') or ''} |")
+        L.append("")
 
     L.append("## 三、价格版本\n")
     L.append("| 条码 | 商品名称 | 供货价 | 生效起 | 生效止 | 零售价 |")
@@ -107,8 +111,11 @@ def main():
         gaps.append("甲方联系电话")
     if not pa.get("开户行") or not pa.get("账号"):
         gaps.append("甲方收款账户")
-    if not ct.get("价格附件"):
-        gaps.append("价格附件编号")
+    for index, contract in enumerate(contracts or [{}], 1):
+        if not contract.get("价格附件"):
+            number = str(contract.get("合同编号") or "").strip()
+            label = number or ("合同 %d" % index if len(contracts) > 1 else "")
+            gaps.append("价格附件编号（%s）" % label if label else "价格附件编号")
     L.append("## 六、待补项\n")
     L.append("- " + ("；".join(gaps) if gaps else "无，主档要素齐全。"))
     L.append("")

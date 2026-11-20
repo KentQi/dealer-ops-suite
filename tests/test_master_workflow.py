@@ -13,6 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "skills" / "dealer-ops-suite" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 import make_master
+import extract_contract
+import make_confirm_html
 
 BAR = "690000000001"
 
@@ -124,11 +126,21 @@ class MasterWorkflowTest(unittest.TestCase):
         self.assertNotEqual(run.returncode, 0)
         self.assertIn("不能用 --pay", run.stderr)
 
-    def apply(self, fields, force=False):
+    def apply(self, fields, force=False, confirmed_by="测试确认人", confirmed=True):
         candidate = self.root / "candidate.json"
-        candidate.write_text(json.dumps({"fields": fields}, ensure_ascii=False), encoding="utf-8")
+        payload = {"fields": fields}
+        if confirmed:
+            payload = {
+                "schema": "contract-confirm/v1",
+                "meta": {"operator": confirmed_by or ""},
+                "fields": fields,
+            }
+        candidate.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         cmd = [sys.executable, str(SCRIPTS / "apply_contract.py"), str(self.master),
                str(candidate), "--write"] + (["--force"] if force else [])
+        if not confirmed and confirmed_by is not None:
+            # 旧命令中的确认人参数也不能绕过正式确认页。
+            cmd += ["--confirmed-by", confirmed_by]
         return subprocess.run(cmd, text=True, capture_output=True, timeout=20)
 
     def test_contract_update_requires_same_contract_number(self):
@@ -171,6 +183,99 @@ class MasterWorkflowTest(unittest.TestCase):
         self.assertEqual(wb["合同"]["A2"].value, "HT-1")
         self.assertEqual(wb["合同"]["A3"].value, "HT-2")
         self.assertEqual(wb["合同"]["G3"].value, "2026-12-05")
+
+    def test_plain_candidate_write_is_rejected_even_with_legacy_operator_and_force(self):
+        before = self.master.read_bytes()
+        run = self.apply([
+            {"field": "付款日", "target": "合同.付款日@合同编号=HT-1", "value": "次月25日前"},
+        ], confirmed=False, force=True)
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("只能 dry-run", run.stderr)
+        self.assertIn("不能替代人工逐项确认", run.stderr)
+        self.assertEqual(self.master.read_bytes(), before)
+
+    def test_formal_confirmation_write_requires_operator(self):
+        before = self.master.read_bytes()
+        run = self.apply([
+            {"field": "付款日", "target": "合同.付款日@合同编号=HT-1", "value": "次月25日前"},
+        ], confirmed_by=None)
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("确认人", run.stderr)
+        self.assertEqual(self.master.read_bytes(), before)
+
+    def test_extracted_contract_flows_through_confirmation_to_new_row(self):
+        contract = self.root / "新合同.txt"
+        contract.write_text(
+            "合同编号：HT-2\n甲方：测试品牌有限公司\n乙方：测试经销有限公司\n"
+            "合同期限：自2026年11月1日至2027年10月31日\n"
+            "结算方式：铺货代销\n付款期限：每月15日前\n"
+            + "双方应依据合同原件核对并履行其他标准合同条款。\n" * 20,
+            encoding="utf-8",
+        )
+        extracted = extract_contract.extract(str(contract))
+        contract_fields = [field for field in extracted["fields"]
+                           if field["target"].startswith("合同.")]
+        keyed = [field for field in contract_fields if field["target"] != "合同.合同编号"]
+        self.assertTrue(keyed)
+        self.assertTrue(all("@合同编号=HT-2" in field["target"] for field in keyed))
+
+        candidate = self.root / "extracted.json"
+        candidate.write_text(json.dumps(extracted, ensure_ascii=False), encoding="utf-8")
+        page = self.root / "confirm.html"
+        run = subprocess.run([sys.executable, str(SCRIPTS / "make_confirm_html.py"),
+                              str(candidate), str(self.master), "-o", str(page)],
+                             text=True, capture_output=True, timeout=20)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        html = page.read_text(encoding="utf-8")
+        self.assertIn("function finalTarget", html)
+        self.assertIn("base+'@合同编号='+contractNo", html)
+
+        headers = {cell.value for cell in openpyxl.load_workbook(self.master)["合同"][1]}
+        rows = make_confirm_html.build_rows(
+            extracted, make_confirm_html.load_master_values(str(self.master)))
+        fields = [{"field": row["field"], "target": row["target"], "value": row["candidate"]}
+                  for row in rows
+                  if row["target"].startswith("合同.") and row["candidate"]
+                  and row["target"].split("@", 1)[0].split(".", 1)[1] in headers]
+        self.assertGreaterEqual(len(fields), 5)
+        confirmed = self.root / "confirmed.json"
+        confirmed.write_text(json.dumps({
+            "schema": "contract-confirm/v1", "meta": {"operator": "测试确认人"}, "fields": fields,
+        }, ensure_ascii=False), encoding="utf-8")
+        wb = openpyxl.load_workbook(self.master)
+        old_row = [cell.value for cell in wb["合同"][2]]
+        wb.close()
+        run = subprocess.run([sys.executable, str(SCRIPTS / "apply_contract.py"),
+                              str(self.master), str(confirmed), "--write"],
+                             text=True, capture_output=True, timeout=20)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        wb = openpyxl.load_workbook(self.master, data_only=True)
+        ws = wb["合同"]
+        self.assertEqual([cell.value for cell in ws[2]], old_row)
+        record = dict(zip([cell.value for cell in ws[1]], [cell.value for cell in ws[3]]))
+        self.assertEqual(record["合同编号"], "HT-2")
+        self.assertEqual(record["起始"], "2026-11-01")
+        self.assertEqual(record["终止"], "2027-10-31")
+        self.assertEqual(record["结算方式"], "铺货代销")
+        self.assertEqual(record["付款日"], "次月15日前")
+        wb.close()
+
+        # A5 摘要必须逐份回显合同，不能只展示模板或旧合同的第一行。
+        digest = self.root / "digest.md"
+        run = subprocess.run([sys.executable, str(SCRIPTS / "make_digest.py"),
+                              str(self.master), "-o", str(digest)],
+                             text=True, capture_output=True, timeout=20)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        text = digest.read_text(encoding="utf-8")
+        self.assertIn("HT-1", text)
+        self.assertIn("HT-2", text)
+        self.assertIn("对账直接读取主档", text)
+
+    def test_statement_no_is_written_to_shared_cfg(self):
+        (self.root / "202610").mkdir()
+        run, cfg = self.load_cfg("--pay", "2026-11-15", "--statement-no", "DJ-202610-01")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertEqual(cfg["statement_no"], "DJ-202610-01")
 
     def test_master_has_two_layers_and_monthly_dates(self):
         output = self.root / "new-master.xlsx"

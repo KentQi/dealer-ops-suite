@@ -6,7 +6,8 @@
 {"years":[2026], "holidays":["2026-10-01"], "workdays":["2026-10-10"]}
 workdays 是调休上班日，优先于周末／节假日。没有覆盖相应年份的日历时，
 工作日待办只给合同期限与估算标记，不伪造精确日期。付款截止日始终保留
-合同原值，只有合同明确登记顺延／提前规则才计算调整。
+合同原值，只有合同明确登记顺延／提前规则才计算调整；付款日文本无法
+解析出明确日时只生成「资料缺失」待办与告警，不推定 30 天等默认日期。
 """
 import argparse
 import datetime as dt
@@ -18,6 +19,8 @@ import sys
 
 import openpyxl
 
+import workdays
+
 SCHEMA = "dealer-ops/todos@1"
 
 
@@ -26,20 +29,20 @@ def fail(message):
 
 
 def day(value, label="日期"):
-    if isinstance(value, dt.datetime):
-        return value.date()
-    if isinstance(value, dt.date):
-        return value
     try:
-        return dt.date.fromisoformat(str(value or "").strip())
+        return workdays.parse_day(value, label)
+    except ValueError as exc:
+        fail(exc)
+
+
+def optional_day(value, label="", warnings=None):
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        return workdays.parse_day(value, label)
     except ValueError:
-        fail(f"{label}须为 YYYY-MM-DD：{value!r}")
-
-
-def optional_day(value):
-    try:
-        return day(value)
-    except SystemExit:
+        if warnings is not None and label:
+            warnings.append(f"{label} 不是合法日期：{value!r}，按缺失处理")
         return None
 
 
@@ -53,41 +56,24 @@ def read_sheet(wb, name):
 
 
 def load_calendar(path):
-    if not path:
-        return None
     try:
-        with open(path, encoding="utf-8") as handle:
-            raw = json.load(handle)
-        holidays = {day(value, "节假日") for value in raw.get("holidays", [])}
-        workdays = {day(value, "调休上班日") for value in raw.get("workdays", [])}
-        years = {int(value) for value in raw.get("years", [])}
-    except (OSError, ValueError, TypeError, AttributeError) as exc:
-        fail("法定节假日／调休日历无法读取：" + str(exc))
-    if not years:
-        years = {value.year for value in holidays | workdays}
-    if not years:
-        fail("空日历必须显式填写 years，否则无法判断是否覆盖相关年份")
-    return {"holidays": holidays, "workdays": workdays, "years": years}
+        return workdays.load_calendar(path)
+    except workdays.CalendarError as exc:
+        fail(exc)
 
 
 def is_workday(value, calendar):
-    if value in calendar["workdays"]:
-        return True
-    if value in calendar["holidays"] or value.weekday() >= 5:
-        return False
-    return True
+    return workdays.is_workday(value, calendar)
 
 
 def workday_due(start, count, calendar):
     """返回 (日期或 None, 是否估算)。"""
-    if calendar is None or not all(year in calendar["years"] for year in (start.year, (start + dt.timedelta(days=count * 3 + 20)).year)):
-        return None, True
-    cursor, remaining = start, int(count)
-    while remaining:
-        cursor += dt.timedelta(days=1)
-        if is_workday(cursor, calendar):
-            remaining -= 1
-    return cursor, False
+    return workdays.workday_due(start, count, calendar)
+
+
+def business_type_of(contract):
+    """业务类型归一化：合同登记含「月结」即按月结口径处理。"""
+    return str(contract.get("业务类型") or contract.get("结算方式") or "").strip()
 
 
 def adjust_payment(due, rule, calendar):
@@ -96,12 +82,15 @@ def adjust_payment(due, rule, calendar):
         return due, False, "按合同登记日期，不自行顺延或提前"
     if re.search(r"(?:不|无需|不得)(?:需)?(?:顺延|提前)", text):
         return due, False, "合同明确不顺延／不提前，保留原截止日"
-    if calendar is None or due.year not in calendar["years"]:
-        return None, True, "合同有工作日／节假日调整规则，但缺覆盖该年份的法定节假日及调休日历"
+    if calendar is None:
+        return None, True, "合同有工作日／节假日调整规则，但缺法定节假日及调休日历"
     direction = -1 if "提前" in text and "顺延" not in text else 1
     cursor = due
     while not is_workday(cursor, calendar):
         cursor += dt.timedelta(days=direction)
+    if not all(year in calendar["years"]
+               for year in range(min(due.year, cursor.year), max(due.year, cursor.year) + 1)):
+        return None, True, "付款日按合同规则调整后超出日历覆盖年份，不生成伪精确日期"
     return cursor, False, f"按合同规则调整；合同原截止日 {due.isoformat()} 保留不变"
 
 
@@ -124,7 +113,9 @@ def generate(master, period, calendar=None):
     items, warnings = [], []
 
     def add(contract_no, kind, title, due=None, estimated=False, evidence="", source="", **extra):
-        raw_id = "|".join((str(contract_no), period, kind, title, str(due)))
+        # 同一合同同类型可能同时存在季度、年度等不同关键值；来源与原文也参与去重。
+        raw_id = "|".join((str(contract_no), period, kind, title, str(due),
+                           str(source or ""), str(extra.get("key_value") or ""), str(evidence or "")))
         items.append({"id": "TODO-" + hashlib.sha256(raw_id.encode("utf-8")).hexdigest()[:12],
                       "contract_no": str(contract_no or ""), "period": period, "type": kind,
                       "title": title, "due_date": due.isoformat() if due else None,
@@ -136,15 +127,15 @@ def generate(master, period, calendar=None):
         if not number:
             warnings.append(f"合同表第 {index} 行缺合同编号，相关待办未生成")
             continue
-        contract_start = optional_day(contract.get("起始"))
+        contract_start = optional_day(contract.get("起始"), f"{number} 的起始日", warnings)
         if contract_start is not None and contract_start >= next_month:
             continue
-        end = optional_day(contract.get("终止"))
+        end = optional_day(contract.get("终止"), f"{number} 的终止日", warnings)
         if end is not None and end < start:
             continue
         source = f"{contract.get('来源文件') or '主档·合同'} {contract.get('来源位置') or ('第 ' + str(index) + ' 行')}"
-        buyout = optional_day(contract.get("买断日"))
-        payment = optional_day(contract.get("付款截止日"))
+        buyout = optional_day(contract.get("买断日"), f"{number} 的买断日", warnings)
+        payment = optional_day(contract.get("付款截止日"), f"{number} 的付款截止日", warnings)
         if buyout:
             add(number, "月结买断", "核对本期签收与退货并准备月结买断对账", buyout, evidence=contract.get("原文依据"), source=source)
         pay_text = str(contract.get("付款日") or "").strip()
@@ -152,13 +143,17 @@ def generate(master, period, calendar=None):
             match = re.search(r"([0-9]{1,2})\s*日", pay_text)
             if match and 1 <= int(match.group(1)) <= 28:
                 payment = next_month.replace(day=int(match.group(1)))
+            else:
+                warnings.append(f"{number} 的付款日「{pay_text}」无法解析出明确日"
+                                f"（须为 1–28 日的月结日），不推定默认天数")
         if payment:
             adjusted, estimated, note = adjust_payment(payment, contract.get("付款顺延规则"), calendar)
             add(number, "付款截止", "核对对账确认与付款截止事项", adjusted, estimated,
                 evidence=contract.get("原文依据") or pay_text, source=source,
                 contract_due_date=payment.isoformat(), calculation_note=note)
-        elif str(contract.get("业务类型") or contract.get("结算方式") or "") == "月结买断":
-            add(number, "资料缺失", "补登记月结付款截止日（不默认日期）", None, True, source=source)
+        elif pay_text or "月结" in business_type_of(contract):
+            add(number, "资料缺失", "补登记明确付款截止日（付款日无法确定，不默认日期）",
+                None, True, evidence=pay_text, source=source)
         if end:
             add(number, "合同到期", "复核合同到期、续签或终止安排", end,
                 evidence=contract.get("原文依据"), source=source)

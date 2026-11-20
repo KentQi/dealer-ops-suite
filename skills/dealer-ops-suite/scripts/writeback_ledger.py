@@ -330,6 +330,12 @@ def verify_write_provenance(ledger, from_json, result_path, review_dir, values):
     expected = document.get("writeback")
     if not isinstance(expected, dict):
         raise ValueError("结算结果凭证缺少内嵌 writeback")
+    for key in ("contract_no", "business_type", "settle_amount"):
+        if key not in expected or expected.get(key) is None or expected.get(key) == "":
+            raise ValueError(f"结算结果凭证的内嵌 writeback 缺少必填字段：{key}")
+    for key in ("contract_no", "business_type"):
+        if not str(expected.get(key)).strip():
+            raise ValueError(f"结算结果凭证的内嵌 writeback 字段为空：{key}")
     mismatches = [key for key, _label, _aliases in FIELDS
                   if not _same_writeback_value(key, values.get(key), expected.get(key))]
     if mismatches:

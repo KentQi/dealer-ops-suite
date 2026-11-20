@@ -19,19 +19,23 @@ from datetime import timedelta
 import openpyxl
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from settlement_rules import RateBook, RuleViolation, parse_day
+from settlement_rules import RateBook, RuleViolation, parse_day, rate_value_column
 
 HEADER_TOKENS = ("商品条码", "条码", "商品名称", "商品编码", "系列")
 NOTE_KEYWORDS = ("配赠", "搭配", "说明", "备注")
 COL_ALIASES = {
     "barcode": ("商品条码", "条码", "sku条码"),
-    "name": ("商品名称", "品名", "商品"),
+    "name": ("商品名称", "品名"),
     "price": ("结算价", "合同价", "供货价", "出货价", "供应价"),
     "decal": ("贴花标准", "贴花单价"),
     "start": ("生效起", "生效开始", "生效日期", "开始日期"),
     "end": ("生效止", "生效结束", "失效日期", "结束日期"),
     "source": ("依据文件", "政策编号", "版本号"),
 }
+
+
+class PolicyColumnError(ValueError):
+    """价格／标准列存在多个权威候选，必须与对账引擎同样阻断。"""
 
 
 def _norm(value):
@@ -49,7 +53,18 @@ def find_header_row(ws, max_scan=12):
 
 
 def map_columns(ws, header_row):
-    mapping, notes = {}, []
+    mapping, notes, assigned = {}, [], {}
+    headers = [ws.cell(header_row, col).value for col in range(1, ws.max_column + 1)]
+    # 价格／贴花列与两个对账引擎共用同一份解析：多列命中即阻断，不任取左列。
+    for field in ("price", "decal"):
+        try:
+            mapping[field] = rate_value_column(headers, COL_ALIASES[field], f"政策表·{ws.title}") + 1
+        except RuleViolation as exc:
+            if exc.code == "AMBIGUOUS_RATE_COLUMN":
+                raise PolicyColumnError(exc.message) from exc
+            # 缺失价格列由 check_versions 按 blocker 输出；贴花列本身可选。
+            continue
+        assigned[mapping[field]] = field
     for col in range(1, ws.max_column + 1):
         header = _norm(ws.cell(header_row, col).value)
         if not header:
@@ -58,9 +73,14 @@ def map_columns(ws, header_row):
             notes.append(col)
             continue
         for field, aliases in COL_ALIASES.items():
-            if field not in mapping and any(header == alias or (alias in header and len(header) <= len(alias) + 5)
-                                             for alias in aliases):
+            if field in mapping:
+                continue
+            if any(header == alias or (alias in header and len(header) <= len(alias) + 5)
+                   for alias in aliases):
+                if col in assigned:
+                    raise ValueError(f"表头「{header}」同时映射为 {assigned[col]} 与 {field}，请修正表头")
                 mapping[field] = col
+                assigned[col] = field
     if notes:
         mapping["note_cols"] = notes
     return mapping
@@ -76,15 +96,15 @@ def norm_barcode(value):
 
 def collect_rows(ws, header_row, cols):
     rows = []
+    # 数据行判据只看条码／品名／价格／标准／生效区间；仅备注或依据文件有文字的表尾说明行继续豁免。
+    core_cols = [cols[field] for field in ("barcode", "name", "price", "decal", "start", "end") if field in cols]
     for row in range(header_row + 1, ws.max_row + 1):
+        if not any(_norm(ws.cell(row, col).value) for col in core_cols):
+            continue
         barcode = norm_barcode(ws.cell(row, cols["barcode"]).value)
         name = _norm(ws.cell(row, cols["name"]).value) if "name" in cols else ""
         notes = [_norm(ws.cell(row, col).value) for col in cols.get("note_cols", [])]
         note = "；".join(value for value in notes if value and value not in ("无", "/"))
-        if not barcode and not name and not note:
-            continue
-        if not barcode and not name:
-            continue  # 表尾说明，不是 SKU 行
         item = {"row": row, "barcode": barcode, "name": name, "note": note}
         for field in ("price", "decal", "start", "end", "source"):
             item[field] = ws.cell(row, cols[field]).value if field in cols else None
@@ -226,7 +246,14 @@ def analyse(xlsx, sheet=None):
         header_row = find_header_row(ws)
         if header_row is None:
             raise ValueError("前 12 行找不到商品条码／商品名称表头")
-        cols = map_columns(ws, header_row)
+        try:
+            cols = map_columns(ws, header_row)
+        except PolicyColumnError as exc:
+            blocker = finding("P4", "价格／标准列歧义", str(exc), "blocker")
+            return {"file": os.path.abspath(xlsx), "sheet": ws.title, "header_row": header_row,
+                    "data_rows": 0, "columns": {},
+                    "needs_confirmation": [blocker], "blocking_findings": [blocker],
+                    "summary": {"total": 1, "blocker": 1, "high": 0}}
         if "barcode" not in cols:
             raise ValueError("找不到条码列")
         rows = collect_rows(ws, header_row, cols)

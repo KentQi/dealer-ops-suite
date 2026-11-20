@@ -316,7 +316,11 @@ def check_policy(policy_path, findings):
         return
     for item in data.get("needs_confirmation", []):
         label = item.get("type") or item.get("id") or "政策表需确认项"
-        add(findings, "政策表", "high", f"[{item.get('id', '')}] {label}", "policy", "价格政策",
+        # 保留 check_policy 自己的 severity：blocker 不得在任何审阅模式下被降级成 high。
+        severity = item.get("severity", "high")
+        if severity not in SEVERITY_ORDER:
+            severity = "high"
+        add(findings, "政策表", severity, f"[{item.get('id', '')}] {label}", "policy", "价格政策",
             json.dumps(item, ensure_ascii=False), item.get("ask", "请确认政策表以哪一行为准。"))
 
 
@@ -324,7 +328,12 @@ def merge_llm(path, findings):
     if not path:
         return {"required": True, "status": "not_run", "note": "仅完成确定性审阅；LLM 语义审阅未运行。"}
     data = load_json(path)
-    items = data.get("findings", data if isinstance(data, list) else [])
+    if isinstance(data, list):
+        items = data
+    elif isinstance(data, dict):
+        items = data.get("findings", [])
+    else:
+        fail("LLM findings JSON 必须是数组，或包含 findings 数组")
     if not isinstance(items, list):
         fail("LLM findings JSON 必须是数组，或包含 findings 数组")
     for item in items:
@@ -446,15 +455,6 @@ def main():
         if not args.policy:
             add(findings, "政策表", "blocker", "写前审阅与放行必须包含最终价格政策", "policy", "价格政策",
                 "", "提供最终政策文件后重新审阅。")
-        # 政策检查保留自己的 severity，不能把所有问题降级成 high。
-        for item in findings:
-            if item["category"] == "政策表" and item["field"] == "policy":
-                try:
-                    evidence = json.loads(item["evidence"].get("value", "{}"))
-                    if evidence.get("severity") == "blocker":
-                        item["severity"] = "blocker"
-                except (TypeError, ValueError):
-                    pass
 
     findings.sort(key=lambda x: (SEVERITY_ORDER[x["severity"]], x["category"], x["field"]))
     for index, item in enumerate(findings, 1):
@@ -503,7 +503,9 @@ def main():
             print(f"Markdown：{args.md}")
 
     summary = result["summary"]
-    if summary["blocker"] or (args.fail_on_high and summary["high"]):
+    if summary["blocker"]:
+        return 2
+    if args.fail_on_high and summary["high"]:
         return 1
     return 0
 

@@ -39,8 +39,8 @@
     {
       "id": "automation",
       "type": "messagebus",
-      "label": "月度提醒",
-      "sublabel": "每月 1 日 09:00",
+      "label": "本地待办",
+      "sublabel": "只写 _待办.json，不创建定时任务",
       "pos": [
         220,
         520
@@ -70,7 +70,7 @@
       "type": "backend",
       "label": "SKILL.md",
       "sublabel": "意图路由 + 硬规则",
-      "tag": "843 行",
+      "tag": "268 行",
       "pos": [
         440,
         300
@@ -140,7 +140,7 @@
       "id": "refs",
       "type": "database",
       "label": "references",
-      "sublabel": "9 份协议与口径",
+      "sublabel": "12 份协议与口径",
       "pos": [
         920,
         110
@@ -212,13 +212,6 @@
       "to": "agent",
       "label": "提出需求",
       "variant": "emphasis"
-    },
-    {
-      "id": "monthly",
-      "from": "automation",
-      "to": "ledger",
-      "label": "每月触发",
-      "variant": "dashed"
     },
     {
       "id": "discover",
@@ -298,7 +291,7 @@
       "dot": "amber",
       "title": "检查边界",
       "items": [
-        "政策表只做三类原则性自检：重复条码、门槛冲突、条码非法",
+        "政策表只做五类原则性自检：同条码多行、门槛冲突、条码缺失或非法、价格版本、生效断档与贴花标准",
         "输出统一为「需确认项」，不直接判错",
         "合同填写校验：日期 / 金额 / 比例 / 目标 / 返利 / 保证金 / 附件一致性",
         "合同包审阅：主合同/附件/政策表交叉检查 + LLM 语义风险清单"

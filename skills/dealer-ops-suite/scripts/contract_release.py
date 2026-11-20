@@ -157,11 +157,14 @@ def build_release(findings, llm_review, main_file, fc_file, policy_file, resolut
     problems += resolution_problems
     if problems:
         raise ValueError("；".join(problems))
+    if inputs is None:
+        # 放行凭证必须绑定写前审阅的 values/spec/policy 等输入：
+        # 否则理论上可用未经写前审阅的 values 生成放行。
+        raise ValueError("最终放行必须绑定写前审阅输入（--spec/--values/--fc-spec/--fc-values/--policy）")
     document = {"schema": SCHEMA, "status": "released", "released_at": datetime.now().isoformat(timespec="seconds"),
                 "files": final_files(main_file, fc_file, policy_file), "resolved_high": resolved,
                 "review_findings_digest": findings_digest(findings)}
-    if inputs is not None:
-        document["input_files"] = input_files(inputs)
+    document["input_files"] = input_files(inputs)
     return document
 
 
@@ -209,7 +212,7 @@ def verify_release(document):
     if release.get("review_findings_digest") != findings_digest(findings):
         problems.append("审阅 findings 在放行后已变更")
     problems += _stored_resolution_problems(findings, release.get("resolved_high"))
-    problems += _input_problems(document, release, required="input_files" in release)
+    problems += _input_problems(document, release, required=True)
     files = release.get("files")
     if not isinstance(files, dict):
         return False, problems + ["放行凭证缺最终文件清单"]

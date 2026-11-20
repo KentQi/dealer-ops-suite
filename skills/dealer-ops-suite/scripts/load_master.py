@@ -29,6 +29,8 @@ def read_sheet(wb, name):
 
 def month_bounds(period):
     year, month = int(period[:4]), int(period[4:])
+    if not 2000 <= year <= 2100 or not 1 <= month <= 12:
+        raise ValueError(f"期间 {period!r} 非法：须为合法 YYYYMM（如 202611）")
     start = datetime.date(year, month, 1)
     next_month = datetime.date(year + (month == 12), 1 if month == 12 else month + 1, 1)
     return start, next_month - datetime.timedelta(days=1), next_month
@@ -108,6 +110,7 @@ def main():
     parser.add_argument("--pay", help="铺货代销付款日 YYYY-MM-DD；月结买断必须在主档登记付款截止日，不接受此参数")
     parser.add_argument("--base", help="本期目录；缺省固定为主档同级的 YYYYMM")
     parser.add_argument("--out", help="输出工作簿全路径")
+    parser.add_argument("--statement-no", help="可选：出账前已登记的对账单编号；不自动生成或沿用其他期间编号")
     parser.add_argument("--strict", action="store_true")
     parser.add_argument("--scene", default="每月出账", choices=list(koujing.SCENES))
     parser.add_argument("--koujing", default="")
@@ -122,9 +125,13 @@ def main():
     parser.add_argument("--cfg-out", help="将同一份 RECON_CFG 原子写入 JSON 文件，供 apply_v17.py --cfg 使用")
     args = parser.parse_args()
 
-    if not re.fullmatch(r"[0-9]{6}", args.period or "") or not 1 <= int(args.period[4:]) <= 12:
-        _fail("[参数错误] --period 须为合法 YYYYMM")
-    start, end, next_month = month_bounds(args.period)
+    if not re.fullmatch(r"[0-9]{6}", args.period or "") or not 1 <= int(args.period[4:]) <= 12 \
+            or not 2000 <= int(args.period[:4]) <= 2100:
+        _fail("[参数错误] --period 须为合法 YYYYMM（如 202611）")
+    try:
+        start, end, next_month = month_bounds(args.period)
+    except ValueError as exc:
+        _fail(f"[参数错误] {exc}")
     asof = args.asof or next_month.isoformat()
     try:
         asof_day = datetime.date.fromisoformat(asof)
@@ -239,6 +246,7 @@ def main():
 
     cfg = {
         "business_type": business_type, "base_dir": base, "master_path": os.path.abspath(args.master),
+        "statement_no": str(args.statement_no or "").strip(),
         "party_a": {"name": party_a.get("名称", ""), "tax": party_a.get("统一社会信用代码", ""),
                     "addr": party_a.get("地址", ""), "contact": party_a.get("联系人", ""),
                     "phone": party_a.get("电话", "")},

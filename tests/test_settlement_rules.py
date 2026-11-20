@@ -99,7 +99,20 @@ class ConsignmentRulesTest(unittest.TestCase):
         self.assertEqual(result["quantity_reconciliation"][0]["variance_qty"], D("40"))
         self.assertEqual(result["settlement_amount"], D("3100.00"))
 
-    def test_return_uses_original_sale_price_and_original_decal(self):
+    def test_fractional_variance_qty_is_preserved_not_truncated(self):
+        # 实数差异（如 9.5）必须原样保留到数量勾稽与金额列，供引擎层写入台账；
+        # 引擎层不得 int 截断成 0。
+        kwargs = dict(self.kwargs, inventory={"690000000001": 30.5})
+        result = calculate_consignment(**kwargs)
+        row = result["quantity_reconciliation"][0]
+        self.assertEqual(row["theoretical_end_qty"], D("40"))
+        self.assertEqual(row["variance_qty"], D("9.5"))
+        self.assertEqual(row["variance_display_amount"], D("522.50"))
+        self.assertEqual(row["status"], "短缺·待双方核对")
+
+    def test_return_uses_original_sale_price_and_actual_charged_decal(self):
+        # 退货行只登记「已计提」未登记标准：本期原销售按期末标准 3 实际计提，
+        # 退货按同一标准冲减，期中调标（10-16 起 2→3）不留贴花残值。
         sales = self.sales + [{
             "id": "R1", "kind": "return", "barcode": "690000000001", "date": "2026-10-25",
             "quantity": 5, "original_sale_id": "S1", "original_decal_charged": True,
@@ -108,9 +121,41 @@ class ConsignmentRulesTest(unittest.TestCase):
         self.assertEqual(result["return_amount"], D("-250.00"))
         self.assertEqual(result["sales_settlement_amount"], D("2850.00"))
         self.assertEqual(result["decal_sale_amount"], D("180.00"))
-        self.assertEqual(result["decal_return_amount"], D("-10.00"))
-        self.assertEqual(result["decal_amount"], D("170.00"))
+        self.assertEqual(result["decal_return_amount"], D("-15.00"))
+        self.assertEqual(result["decal_amount"], D("165.00"))
         self.assertEqual(result["quantity_reconciliation"][0]["net_sales_qty"], D("55"))
+
+    def test_in_period_full_return_leaves_no_decal_residual_after_mid_period_change(self):
+        # 期中调标：10-10 销售（期末标准 3）+ 10-25 完整退货（退 40 件）→ 净贴花为 0
+        sales = [{"id": "S1", "barcode": "690000000001", "date": "2026-10-10", "quantity": 40},
+                 {"id": "R1", "kind": "return", "barcode": "690000000001", "date": "2026-10-25",
+                  "quantity": 40, "original_sale_id": "S1", "original_decal_charged": True}]
+        result = calculate_consignment(**dict(self.kwargs, sales=sales,
+                                              inventory={"690000000001": 100}))
+        self.assertEqual(result["decal_sale_amount"], D("120.00"))
+        self.assertEqual(result["decal_return_amount"], D("-120.00"))
+        self.assertEqual(result["decal_amount"], D("0.00"))
+        self.assertEqual(result["quantity_reconciliation"][0]["net_sales_qty"], D("0"))
+
+    def test_return_traced_to_current_period_sale_needs_no_explicit_decal_flag(self):
+        # 退货未登记计提状态，但原销售在本期且已实际计提 → 按实际标准冲减，不阻断
+        sales = self.sales + [{
+            "id": "R1", "kind": "return", "barcode": "690000000001", "date": "2026-10-25",
+            "quantity": 5, "original_sale_id": "S1",
+        }]
+        result = calculate_consignment(**dict(self.kwargs, sales=sales, inventory={"690000000001": 42}))
+        self.assertEqual(result["decal_return_amount"], D("-15.00"))
+
+    def test_cross_period_return_without_decal_evidence_is_blocked(self):
+        # 跨期历史流水没有任何计提证据，且退货行未登记 → 阻断，不默认冲减
+        sales = self.sales + [{
+            "id": "R1", "kind": "return", "barcode": "690000000001", "date": "2026-10-25",
+            "quantity": 5, "original_sale_id": "OLD-S1", "original_unit_price": 50,
+        }]
+        original_sales = [{"id": "OLD-S1", "barcode": "690000000001", "date": "2026-09-10", "quantity": 5}]
+        with self.assertRaises(RuleViolation) as caught:
+            calculate_consignment(**dict(self.kwargs, sales=sales, original_sales=original_sales))
+        self.assertEqual(caught.exception.code, "ORIGINAL_DECAL_UNKNOWN")
 
     def test_return_without_original_price_evidence_is_blocked(self):
         sales = self.sales + [{
@@ -119,15 +164,6 @@ class ConsignmentRulesTest(unittest.TestCase):
         with self.assertRaises(RuleViolation) as caught:
             calculate_consignment(**dict(self.kwargs, sales=sales))
         self.assertEqual(caught.exception.code, "ORIGINAL_PRICE_REQUIRED")
-
-    def test_return_without_original_decal_evidence_is_blocked(self):
-        sales = self.sales + [{
-            "id": "R1", "kind": "return", "barcode": "690000000001", "date": "2026-10-25",
-            "quantity": 5, "original_sale_id": "S1",
-        }]
-        with self.assertRaises(RuleViolation) as caught:
-            calculate_consignment(**dict(self.kwargs, sales=sales))
-        self.assertEqual(caught.exception.code, "ORIGINAL_DECAL_UNKNOWN")
 
     def test_string_false_does_not_reverse_decal(self):
         sales = self.sales + [{"id": "R1", "kind": "return", "barcode": "690000000001",

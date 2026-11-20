@@ -51,13 +51,39 @@ class ContractFillGateTest(unittest.TestCase):
             args += ["--resolutions", str(resolutions)]
         return subprocess.run(args, text=True, capture_output=True, timeout=20)
 
+    def release_inputs(self, policy=None):
+        return {"spec": str(self.values), "values": str(self.values),
+                "fc_spec": str(self.values), "fc_values": str(self.fc_values),
+                "policy": str(policy or self.policy)}
+
     def final_document(self, main=None, fc=None, policy=None):
         main, fc, policy = main or self.main, fc or self.fc, policy or self.policy
         findings = []
         release = contract_release.build_release(findings, {"status": "merged"}, str(main), str(fc),
-                                                 str(policy), None)
+                                                 str(policy), None, inputs=self.release_inputs(policy))
         return {"schema": "dealer-ops/contract-review@1", "findings": findings,
                 "llm_review": {"status": "merged"}, "release": release}
+
+    def test_release_requires_review_input_binding(self):
+        # P2-12：放行凭证必须绑定写前审阅的 values/spec/policy 输入，
+        # 未绑定输入的放行在生成与校验两侧都必须失败。
+        with self.assertRaisesRegex(ValueError, "绑定"):
+            contract_release.build_release([], {"status": "merged"}, str(self.main), str(self.fc),
+                                           str(self.policy), None)
+        release = contract_release.build_release([], {"status": "merged"}, str(self.main), str(self.fc),
+                                                 str(self.policy), None, inputs=self.release_inputs())
+        stale = {"schema": "dealer-ops/contract-review@1", "findings": [],
+                 "llm_review": {"status": "merged"},
+                 "release": {key: value for key, value in release.items() if key != "input_files"}}
+        ok, problems = contract_release.verify_release(stale)
+        self.assertFalse(ok)
+        self.assertTrue(any("输入文件哈希绑定" in item for item in problems), problems)
+        self.values.write_text('{"changed": true}', encoding="utf-8")
+        document = {"schema": "dealer-ops/contract-review@1", "findings": [],
+                    "llm_review": {"status": "merged"}, "release": release}
+        ok, problems = contract_release.verify_release(document)
+        self.assertFalse(ok)
+        self.assertTrue(any("已变更" in item for item in problems), problems)
 
     def test_write_gate_requires_review_and_binds_high_resolutions(self):
         missing = subprocess.run([sys.executable, str(SCRIPTS / "apply_fill.py")],
@@ -98,6 +124,29 @@ class ContractFillGateTest(unittest.TestCase):
         self.values.write_text('{"changed": true}', encoding="utf-8")
         problems = contract_release.check_write_review(document)
         self.assertTrue(any("已变更" in item for item in problems), problems)
+
+    def test_incremental_plan_binds_user_confirmed_values(self):
+        # P2-11：增量（无指纹）计划不得绕过信任根——字段须在规格内、须有用户确认值、
+        # 落笔文本须与确认值（或其渲染结果）一致。
+        from apply_fill import check_incremental_plan
+        spec = self.root / "spec.json"
+        spec.write_text(json.dumps({
+            "fields": [{"id": "JX-01", "label": "编号", "render": "主合同编号：{v}", "vtype": "text"},
+                       {"id": "JX-02", "label": "名称", "render": "{v}", "vtype": "text"}],
+            "cells": [], "grids": [],
+        }), encoding="utf-8")
+        values = self.root / "values-ok.json"
+        values.write_text(json.dumps({"JX-01": "JX-2026-001"}), encoding="utf-8")
+        plan = {"ops": [{"field_id": "JX-01", "kind": "replace", "find": "＿" * 12, "occurrence": 1,
+                         "value": "主合同编号：JX-2026-001", "expect": "主合同编号：JX-2026-001"}]}
+        self.assertEqual(check_incremental_plan(plan, str(spec), str(values)), [])
+        tampered = json.loads(json.dumps(plan))
+        tampered["ops"][0]["value"] = tampered["ops"][0]["expect"] = "主合同编号：HACK-001"
+        self.assertTrue(check_incremental_plan(tampered, str(spec), str(values)))
+        unconfirmed = json.loads(json.dumps(plan))
+        unconfirmed["ops"][0]["field_id"] = "JX-02"
+        problems = check_incremental_plan(unconfirmed, str(spec), str(values))
+        self.assertTrue(any("确认值" in item for item in problems), problems)
 
     def test_final_gate_detects_main_attachment_and_policy_changes(self):
         for role, target in (("main", self.main), ("anti_diversion", self.fc), ("price_policy", self.policy)):
