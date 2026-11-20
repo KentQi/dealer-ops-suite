@@ -24,7 +24,9 @@
     "LICENSE",
     "plugin.json",
     "skills",
-    "requirements.txt"
+    "requirements.txt",
+    "tools",
+    ".github"
   ],
   "docsPhases": [
     "source"
