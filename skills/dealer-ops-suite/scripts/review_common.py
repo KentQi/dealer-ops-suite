@@ -1,7 +1,7 @@
 """L6 LLM 复核层的共享常量与工具（review_common.py）。
 
 被 make_review_packet.py / apply_review.py 共同引用，避免两份脚本各写一套常量。
-本模块只依赖标准库，不联网、不写文件、不调用任何外部模型。
+除共享内核 schema_common（sha256_file）外只依赖标准库，不联网、不写文件、不调用任何外部模型。
 
 约定：
 - schema 值固定，报告/复核包跨脚本、跨版本可识别；
@@ -9,8 +9,10 @@
 - 时间统一用带时区的 ISO8601（UTC，秒级），保证 JSON 可比较。
 """
 import datetime
-import hashlib
 import json
+
+# 文件 SHA-256 的单一实现已收敛到 schema_common（1MiB 分块）；此处只导入保持既有名字可用。
+from schema_common import sha256_file
 
 # ---- schema ----
 SCHEMA_PACKET = "dealer-ops/review-packet@1"
@@ -49,15 +51,6 @@ REQUIRED_ITEMS = (
     ("R10", "异常与差异解释充分（任何盈亏均列出并供双方核对，未编造原因）"),
 )
 REQUIRED_IDS = tuple(item_id for item_id, _ in REQUIRED_ITEMS)
-
-
-def sha256_file(path):
-    """分块计算文件 SHA-256（十六进制小写）；文件不存在/不可读时抛 OSError。"""
-    digest = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def load_json(path):

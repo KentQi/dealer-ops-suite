@@ -52,6 +52,7 @@ from datetime import datetime
 import openpyxl
 
 from review_common import LOCK_NAME, REVIEW_DIR, SCHEMA_REPORT, sha256_file
+from settlement_rules import money
 
 # key -> (中文表头, 允许的别名)
 FIELDS = [
@@ -115,7 +116,9 @@ def parse_number(value, key, label):
         fail(f"{label} 超出允许范围（|x| < 1e12）：{value!r}")
     if key in NON_NEGATIVE and number < 0:
         fail(f"{label} 不能为负数：{value!r}")
-    return round(number, 2)
+    # 舍入口径与权威金额规则一致（settlement_rules.money：Decimal HALF_UP 量化到分），
+    # 不再用 float round（half-even）；.xx5 回写值按四舍五入进位是本次收敛的目标行为。
+    return float(money(value))
 
 
 def load_payload(args):

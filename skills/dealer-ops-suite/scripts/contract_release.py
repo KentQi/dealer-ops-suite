@@ -6,17 +6,13 @@ import json
 import os
 from datetime import datetime
 
+# 文件 SHA-256 的单一实现已收敛到 schema_common（1MiB 分块）；此处只导入保持既有名字可用。
+# findings_digest 是对 findings JSON 的结构化摘要（hashlib 仍需要），不属于文件哈希，保留本地。
+from schema_common import sha256_file
+
 SCHEMA = "dealer-ops/contract-release@1"
 REVIEW_SCHEMA = "dealer-ops/contract-review@1"
 ALLOWED_RESOLUTIONS = {"已修正", "接受风险", "不适用"}
-
-
-def sha256_file(path):
-    digest = hashlib.sha256()
-    with open(path, "rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def findings_digest(findings):

@@ -14,6 +14,10 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Iterable, Mapping, Optional
 
+# 条码归一化的语义权威已收敛到 schema_common.normalize_barcode（共享内核）；
+# 此处只再导出并保留公开名 barcode_of，两条对账引擎与规则核心继续用旧名调用。
+from schema_common import normalize_barcode as barcode_of
+
 
 CENT = Decimal("0.01")
 ZERO = Decimal("0")
@@ -79,17 +83,6 @@ def parse_day(value: Any, label: str = "业务日期") -> date:
         except ValueError:
             pass
     raise RuleViolation("INVALID_BUSINESS_DATE", f"{label}无法识别：{value!r}", value=value)
-
-
-def barcode_of(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, float) and value.is_integer():
-        return str(int(value))
-    text = str(value).strip()
-    if text.endswith(".0") and text[:-2].isdigit():
-        text = text[:-2]
-    return text
 
 
 def normalize_business_type(value: Any) -> str:
