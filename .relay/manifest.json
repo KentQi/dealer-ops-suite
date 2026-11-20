@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "projectName": "dealer-ops-suite",
+  "entryFiles": [
+    "AGENTS.md",
+    "CLAUDE.md",
+    "GEMINI.md"
+  ],
+  "allowedTopLevel": [
+    "src",
+    "docs",
+    "scripts",
+    "tests",
+    ".relay",
+    ".github",
+    "README.md",
+    "SPEC.md",
+    "DECISIONS.md",
+    "TASKS.md",
+    "LOG.md",
+    "START.md",
+    "verify",
+    "package.json",
+    ".gitignore",
+    ".editorconfig",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "GEMINI.md",
+    ".DS_Store",
+    ".v2c",
+    ".worktrees",
+    "LICENSE",
+    "PR1-审计报告.md",
+    "PR8-复核报告.md",
+    "out",
+    "plugin.json",
+    "skills",
+    "user-audit.txt"
+  ],
+  "docsPhases": [
+    "source"
+  ],
+  "facts": {
+    "enabled": true,
+    "since": "2026-11-20 23:16",
+    "strict": false
+  },
+  "onboardedAt": "2026-11-20T15:16:51.291Z",
+  "relayHome": "/Users/kent/Desktop/projects/relay-mcp"
+}

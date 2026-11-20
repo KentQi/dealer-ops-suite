@@ -34,3 +34,21 @@ values.json
 
 # Keep the fictional customer-master template
 !skills/dealer-ops-suite/assets/客户主档-模板.xlsx
+.worktrees/
+.env
+.env.*
+*.key
+*.pem
+node_modules/
+.relay/claims/
+.relay/relay.lock
+.relay/worktrees/
+.relay/worktrees.json
+.relay/worktrees.lock
+.relay/last-failure.json
+*.relay-bak-*
+coverage/
+
+# Local audit scratch & plugin noise
+user-audit.txt
+.v2c/
