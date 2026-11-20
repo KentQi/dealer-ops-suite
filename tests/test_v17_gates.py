@@ -279,5 +279,33 @@ class V17GateTest(ConsignmentFixture):
                          hashlib.sha256(self.out.read_bytes()).hexdigest())
 
 
+class PipelineGateTest(ConsignmentFixture):
+    """对外文案门禁是出账流水线的强制环节（T011）。
+
+    历史教训：01-对账单说明#6 曾自带 l1 禁词「主档」（T009 修复，d234f6a），
+    正常出账过不了闸，全流程被迫 --no-gate 绕行。本类把「闸门恢复实职」
+    钉成回归：不带 --no-gate 必须实际扫描并放行干净出账；禁词注入必须拒绝。
+    """
+
+    def test_clean_statement_passes_gate_without_no_gate_flag(self):
+        _run, cfg = self.run_engine()
+        run = self.run_v17(self.dump_cfg(cfg))  # 不带 --no-gate
+        self.assertEqual(run.returncode, 0, run.stdout + "\n" + run.stderr)
+        payload = json.loads(run.stdout)
+        self.assertTrue(payload["ok"])
+        self.assertGreater(payload["gate"], 0, "门禁必须实际扫描（回执含扫描计数）")
+
+    def test_gate_rejects_banned_word_injected_after_settlement(self):
+        _run, cfg = self.run_engine()
+        # 出账后、交付渲染前，向对账单注入 l1 禁词（模拟手工改动或上游污染）
+        wb = openpyxl.load_workbook(self.out)
+        wb["01-对账单"]["H60"] = "补充说明：本表数量取自挂账表"
+        wb.save(self.out)
+        wb.close()
+        run = self.run_v17(self.dump_cfg(cfg))
+        self.assertNotEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("对外门禁未通过", run.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
