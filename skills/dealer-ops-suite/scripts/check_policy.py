@@ -21,6 +21,17 @@ import openpyxl
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from settlement_rules import RateBook, RuleViolation, parse_day, rate_value_column
 
+try:
+    # 共享内核（列定位／条码归一化／多字段映射）与 settlement_rules 同目录；上方已把
+    # 脚本目录插到 sys.path 首位，CLI 直跑、review_contract_package 子进程与测试导入
+    # 三种调起方式均可解析。缺失时报中文错，不静默降级。
+    from schema_common import FieldColumnConflict, map_field_columns, normalize_barcode
+except ImportError as exc:
+    raise RuntimeError(
+        "check_policy.py 需要同目录的 schema_common.py（共享内核：列定位／条码归一化／"
+        "多字段映射）；导入失败：%s。请确认 Skill 安装完整，脚本不可单独复制使用。" % exc
+    ) from exc
+
 HEADER_TOKENS = ("商品条码", "条码", "商品名称", "商品编码", "系列")
 NOTE_KEYWORDS = ("配赠", "搭配", "说明", "备注")
 COL_ALIASES = {
@@ -53,45 +64,35 @@ def find_header_row(ws, max_scan=12):
 
 
 def map_columns(ws, header_row):
-    mapping, notes, assigned = {}, [], {}
+    mapping, assigned = {}, {}
     headers = [ws.cell(header_row, col).value for col in range(1, ws.max_column + 1)]
     # 价格／贴花列与两个对账引擎共用同一份解析：多列命中即阻断，不任取左列。
     for field in ("price", "decal"):
         try:
-            mapping[field] = rate_value_column(headers, COL_ALIASES[field], f"政策表·{ws.title}") + 1
+            rate_col = rate_value_column(headers, COL_ALIASES[field], f"政策表·{ws.title}")
         except RuleViolation as exc:
             if exc.code == "AMBIGUOUS_RATE_COLUMN":
                 raise PolicyColumnError(exc.message) from exc
             # 缺失价格列由 check_versions 按 blocker 输出；贴花列本身可选。
             continue
-        assigned[mapping[field]] = field
-    for col in range(1, ws.max_column + 1):
-        header = _norm(ws.cell(header_row, col).value)
-        if not header:
-            continue
-        if any(word in header for word in NOTE_KEYWORDS):
-            notes.append(col)
-            continue
-        for field, aliases in COL_ALIASES.items():
-            if field in mapping:
-                continue
-            if any(header == alias or (alias in header and len(header) <= len(alias) + 5)
-                   for alias in aliases):
-                if col in assigned:
-                    raise ValueError(f"表头「{header}」同时映射为 {assigned[col]} 与 {field}，请修正表头")
-                mapping[field] = col
-                assigned[col] = field
-    if notes:
-        mapping["note_cols"] = notes
+        mapping[field] = rate_col + 1
+        assigned[rate_col] = field
+    # 其余字段交给共享内核的多字段映射原语（语义与收敛前别名循环逐字一致，
+    # 归一化仅去空白）；同列双字段冲突仍转译为 ValueError，保持上层接口不变。
+    try:
+        fields, note_idx = map_field_columns(headers, COL_ALIASES, note_keywords=NOTE_KEYWORDS,
+                                             assigned=assigned)
+    except FieldColumnConflict as exc:
+        raise ValueError(str(exc)) from exc
+    mapping.update({field: col + 1 for field, col in fields.items()})
+    if note_idx:
+        mapping["note_cols"] = [col + 1 for col in note_idx]
     return mapping
 
 
 def norm_barcode(value):
-    if value is None:
-        return ""
-    if isinstance(value, float) and value.is_integer():
-        return str(int(value))
-    return str(int(value)) if isinstance(value, int) else _norm(value)
+    """共享内核权威语义（与 settlement_rules.barcode_of 一致）；保留函数名供 collect_rows 调用。"""
+    return normalize_barcode(value)
 
 
 def collect_rows(ws, header_row, cols):

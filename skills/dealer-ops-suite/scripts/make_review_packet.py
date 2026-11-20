@@ -14,14 +14,17 @@
     sources[{role,path,sha256}], period|null, asof|null, sheets[{name,rows,cols}],
     figures{opening_qty,opening_amount,settled_qty,settled_amount,diff_qty,diff_amount,
             addback_qty,addback_amount,tiehua_total,period_end|null, ...业务模式扩展字段},
-    rule_result, sku_rows[{bar,name,opening_qty,settled_qty,settled_amount,diff_qty,unit_price,...}],
+    rule_result（有凭证时外置：包内为引用对象 {_external,sha256,rows,business_type}，
+                规则底稿写在复核包旁 <包名>_rule_result.json；无凭证时为 null）,
+    sku_rows[{bar,name,opening_qty,settled_qty,settled_amount,diff_qty,unit_price,...}],
     priced_rows[逐笔数量、单价、金额与取价依据], tiehua_rows[{bar,name,settled_qty,standard,amount,...}],
     claims[{sheet,cell,text,numbers[]}], cross_refs[{sheet,cell,text,refs[]}],
     contract{no,method,basis,objection_days,signback_days,pay_day_text,buyout_date,payment_due_date}|null,
     redline_scan[{id,pattern,hits[{sheet,cell,text}]}],
     checklist[{id,item}], warnings[]
 
-失败：中文原因写 stderr，退出码 1（stdout 不输出半成品）。
+失败：中文原因写 stderr，退出码 1（stdout 不输出半成品）。有凭证时先写规则底稿侧车、再写复核包：
+侧车写失败直接失败（不留半成品），包写失败则回删已写的侧车。
 """
 import argparse
 import datetime
@@ -920,9 +923,42 @@ def _count_formula_cells(path):
     return count
 
 
+# ---------------------------------------------------------------- 规则底稿侧车
+def rule_result_sidecar_path(out_path):
+    """复核包输出路径 → 规则底稿侧车路径（同目录、同名 + _rule_result.json）。"""
+    return os.path.splitext(os.path.abspath(out_path))[0] + "_rule_result.json"
+
+
+def _rule_result_row_count(rule_result, business_type):
+    """引用对象里的 rows：按业务模式数包外规则底稿的逐笔行数。"""
+    if not isinstance(rule_result, dict):
+        return 0
+    if business_type == "monthly_buyout":
+        return (len(rule_result.get("priced_receipts") or [])
+                + len(rule_result.get("priced_returns") or [])
+                + len(rule_result.get("priced_sales_for_decal") or []))
+    return len(rule_result.get("priced_lines") or [])
+
+
+def _write_rule_result_sidecar(rule_result, sidecar_path):
+    """把规则底稿写成侧车文件（先侧车后包）；返回字节 SHA-256。"""
+    _write_text(sidecar_path, json.dumps(rule_result, ensure_ascii=False, indent=2) + "\n")
+    try:
+        return sha256_file(sidecar_path)
+    except OSError as exc:
+        raise PacketError("[无法读取规则底稿侧车] %s\n原因：%s" % (sidecar_path, exc))
+
+
 # ---------------------------------------------------------------- 组装
-def build_packet(workbook_path, master_path=None, cfg_path=None):
-    """读取工作簿与显式配置文件（或兼容的环境变量），返回复核包 dict。"""
+def build_packet(workbook_path, master_path=None, cfg_path=None, out_path=None):
+    """读取工作簿与显式配置文件（或兼容的环境变量），返回复核包 dict。
+
+    out_path：复核包 JSON 输出路径（--out 原值即可，允许相对路径）；有结果凭证时，
+    规则底稿会在返回前先写到「复核包旁 <包名>_rule_result.json」侧车，
+    包内 rule_result 换成 {_external, sha256, rows, business_type} 引用对象；
+    未传时按默认输出路径 <工作簿目录>/_复核记录/<工作簿名>_复核包.json 推导侧车位置。
+    无凭证（rule_result=null）不写侧车，包内维持 null。
+    """
     workbook_abs = os.path.abspath(workbook_path)
     if not os.path.isfile(workbook_abs):
         raise PacketError("[找不到工作簿] %s\n请确认路径（本脚本只读 .xlsx，.xls 请先另存为 .xlsx）。"
@@ -1030,6 +1066,19 @@ def build_packet(workbook_path, master_path=None, cfg_path=None):
         "checklist": [{"id": item_id, "item": item} for item_id, item in REQUIRED_ITEMS],
         "warnings": warnings,
     }
+    if rule_result is not None:
+        # 有凭证：先把规则底稿写成侧车（失败则整个生成失败，不会留下引用空壳的复核包），
+        # 包内只留引用对象减重；月结贴花逐笔行在 tiehua_rows 内联，不随侧车外置。
+        resolved_out = os.path.abspath(out_path) if out_path \
+            else _default_paths(workbook_abs, None, None)[0]
+        sidecar_path = rule_result_sidecar_path(resolved_out)
+        sidecar_sha = _write_rule_result_sidecar(rule_result, sidecar_path)
+        packet["rule_result"] = {
+            "_external": os.path.basename(sidecar_path),
+            "sha256": sidecar_sha,
+            "rows": _rule_result_row_count(rule_result, business_type),
+            "business_type": business_type,
+        }
     return packet
 
 
@@ -1055,6 +1104,11 @@ def render_md(packet):
     lines.append("# 复核包 · %s" % os.path.basename(workbook["path"]))
     lines.append("")
     lines.append("- schema：%s；业务模式：%s" % (_code(packet["schema"]), _code(packet.get("business_type") or "legacy")))
+    rule_ref = packet.get("rule_result")
+    if isinstance(rule_ref, dict) and rule_ref.get("_external"):
+        lines.append("- 规则底稿：外置于 %s（sha256 %s，%s 笔逐笔）；核对 R1 时须读取该文件并与重算数对照"
+                     % (_code(str(rule_ref["_external"])), _code(str(rule_ref.get("sha256") or "")[:16]),
+                        _fmt(rule_ref.get("rows"))))
     lines.append("- 工作簿：%s（sha256 %s，%s 字节）"
                  % (_code(workbook["path"]), _code(workbook["sha256"]), _fmt(workbook["size"])))
     master = packet["master"]
@@ -1208,7 +1262,7 @@ def _write_text(path, text):
         raise PacketError("[写入失败] %s\n原因：%s" % (path, exc))
 
 
-def _print_summary(packet, json_path, md_path):
+def _print_summary(packet, json_path, md_path, sidecar_path=None):
     figures = packet["figures"]
 
     def _show(value):
@@ -1234,6 +1288,11 @@ def _print_summary(packet, json_path, md_path):
     print("  警告    : %d 条" % len(packet["warnings"]))
     print("  JSON    : %s" % json_path)
     print("  MD      : %s" % md_path)
+    if sidecar_path:
+        sidecar_sha = (packet.get("rule_result") or {}).get("sha256") \
+            if isinstance(packet.get("rule_result"), dict) else None
+        print("  规则底稿: %s（sha256=%s…，外置于包旁，归档须同放）"
+              % (sidecar_path, str(sidecar_sha or "")[:16]))
 
 
 def main(argv=None):
@@ -1246,14 +1305,26 @@ def main(argv=None):
     parser.add_argument("--md", help="复核包 Markdown 输出路径（默认与 JSON 同名 .md）")
     args = parser.parse_args(argv)
     try:
-        packet = build_packet(args.workbook, args.master, args.cfg)
+        # build_packet 内部先写规则底稿侧车、再返回引用对象；这里随后写包，顺序不可颠倒。
+        packet = build_packet(args.workbook, args.master, args.cfg, out_path=args.out)
         out_path, md_path = _default_paths(packet["workbook"]["path"], args.out, args.md)
-        _write_text(out_path, json.dumps(packet, ensure_ascii=False, indent=2) + "\n")
-        _write_text(md_path, render_md(packet) + "\n")
+        rule_ref = packet.get("rule_result")
+        sidecar_path = rule_result_sidecar_path(out_path) \
+            if isinstance(rule_ref, dict) and rule_ref.get("_external") else None
+        try:
+            _write_text(out_path, json.dumps(packet, ensure_ascii=False, indent=2) + "\n")
+            _write_text(md_path, render_md(packet) + "\n")
+        except PacketError:
+            if sidecar_path and os.path.isfile(sidecar_path):
+                try:  # 侧车已写、包未写成 → 回删侧车，不留半成品
+                    os.remove(sidecar_path)
+                except OSError:
+                    pass
+            raise
     except PacketError as exc:
         print(str(exc), file=sys.stderr)
         return 1
-    _print_summary(packet, out_path, md_path)
+    _print_summary(packet, out_path, md_path, sidecar_path)
     return 0
 
 

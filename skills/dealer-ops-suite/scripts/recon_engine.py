@@ -8,7 +8,8 @@ from openpyxl.worksheet.properties import PageSetupProperties
 import json
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from settlement_rules import RateBook, RuleViolation, calculate_consignment, jsonable, normalize_business_type
+from decimal import Decimal
+from settlement_rules import RateBook, RuleViolation, calculate_consignment, jsonable, money, normalize_business_type
 
 # ==================== 可配置项（通过环境变量 RECON_CFG 传入 JSON）====================
 CFG = {}
@@ -442,15 +443,17 @@ def _fit_h(txt, cpl=30.0):
 
 
 def rmb_upper(amount):
-    amount = round(float(amount), 2)
-    if abs(amount) < 0.005: return "零元整"
-    prefix = "负" if amount < 0 else ""
-    amount = abs(amount)
+    """金额 → 人民币大写。舍入统一走 settlement_rules.money（HALF_UP），
+    元/角/分用 Decimal 精确分解，不再经 float 减法（0.34 类尾差曾靠 round() 补偿）。"""
+    m = money(amount)  # Decimal，两位小数，HALF_UP
+    if abs(m) < Decimal("0.005"): return "零元整"
+    prefix = "负" if m < 0 else ""
+    m = abs(m)
     digits = "零壹贰叁肆伍陆柒捌玖"
     unit1 = ["", "拾", "佰", "仟"]
     secs = ["", "万", "亿", "万亿"]
-    integer = int(amount)
-    cents = int(round((amount - integer) * 100))
+    integer = int(m)
+    cents = int(m * 100) % 100  # m 已量化到 0.01，×100 精确无误差
     jiao, fen = divmod(cents, 10)
     if integer == 0:
         yuan = "零"
@@ -644,6 +647,15 @@ def _iso_day(value):
 
 _PART = {}
 
+try:
+    from schema_common import normalize_barcode as _norm_bar
+    from schema_common import locate_column as _locate_column
+    from schema_common import ColumnAmbiguous as _ColumnAmbiguous
+except Exception as _norm_import_error:  # noqa: BLE001 - 依赖缺失时中文中止
+    raise SystemExit("[中止] 条码归一化／列定位需要 schema_common.py（%s）；请确认脚本目录完整"
+                     % _norm_import_error)
+
+
 def _bail(msg):
     """失败时先把已算出的关键数打到 stderr，便于定位。"""
     sys.stderr.write("\n[自检未通过] " + msg + "\n")
@@ -789,7 +801,7 @@ for _x in _jia_settle:
         _o = _jm[_k]
         if not _HAS_LOT:
             print(f"⚠ 挂账表中「{_x['name']}」出现多行，已按数量合计")
-        _o["qty"] += _x["qty"]; _o["init"] += _x["init"]; _o["amt"] = round(_o["amt"] + _x["amt"], 2)
+        _o["qty"] += _x["qty"]; _o["init"] += _x["init"]; _o["amt"] = float(money(_o["amt"] + _x["amt"]))
         _o["lots"].append((_x["lot"], _x["exp"], _x["qty"]))
     else:
         _jm[_k] = dict(_x, lots=[(_x["lot"], _x["exp"], _x["qty"])])
@@ -802,7 +814,7 @@ for _x in _jia_promo:
     if _k in PROMO:
         _p = PROMO[_k]
         _p["out_qty"] += _x["qty"]
-        _p["amt"] = round(_p["amt"] + _x["amt"], 2)
+        _p["amt"] = float(money(_p["amt"] + _x["amt"]))
         if _p["kind"] != _x["kind"]:
             print(f"⚠ 促销物料「{_x['name']}」存在多个物料属性（{_p['kind']} / {_x['kind']}），已按首次出现归类")
     else:
@@ -838,10 +850,7 @@ inv = []
 for _ri, r in enumerate(ws_inv.iter_rows(min_row=_hr + 1, values_only=True), _hr + 1):
     if not r or len(r) <= max(k_name, k_qty) or not r[k_name]:
         continue
-    _bar = _cell_of(r, k_bar)
-    _bar = "" if _bar is None else str(_bar).strip()
-    if _bar.endswith(".0") and _bar[:-2].isdigit():
-        _bar = _bar[:-2]
+    _bar = _norm_bar(_cell_of(r, k_bar))
     _retail = _cell_of(r, k_retail)
     _brand = _cell_of(r, k_brand)
     inv.append(dict(name=str(r[k_name]).strip(),
@@ -903,10 +912,7 @@ for _ri, r in enumerate((ws_nov.iter_rows(min_row=_hr2 + 1, values_only=True) if
     _q = _num_val(_cell_of(r, n_num), f"次月销售表第 {_ri} 行·销售数量")
     if not _q:
         continue
-    _bar = _cell_of(r, n_bar)
-    _bar = "" if _bar is None else str(_bar).strip()
-    if _bar.endswith(".0") and _bar[:-2].isdigit():
-        _bar = _bar[:-2]
+    _bar = _norm_bar(_cell_of(r, n_bar))
     if not _bar:
         _iv = inv_by_n.get(norm(_cell_of(r, n_name)))
         _bar = _iv["bar"] if _iv else ""
@@ -986,10 +992,7 @@ for _ri, r in enumerate(ws_oct.iter_rows(min_row=_hr3 + 1, values_only=True), _h
     if txn_kind == "sale" and txn_text not in ("销售", "动销", "sale"):
         _bail(f"销售流水第 {_ri} 行业务类型无法识别：{txn_text!r}")
     q = -abs(raw_q) if txn_kind == "return" else raw_q
-    _bar = _cell_of(r, o_bar)
-    _bar = "" if _bar is None else str(_bar).strip()
-    if _bar.endswith(".0") and _bar[:-2].isdigit():
-        _bar = _bar[:-2]
+    _bar = _norm_bar(_cell_of(r, o_bar))
     if not _bar:
         _bail(f"销售流水第 {_ri} 行缺少商品条码。销售流水必须带条码，不得按品名猜算，请核对导出文件")
     _store = _cell_of(r, o_store)
@@ -1053,6 +1056,10 @@ print(f"识别：库存表「{inv_sheet_name}」/ 次月表「{ws_nov.title if w
 # ---------- 合同价格与贴花：唯一取价来源，SCD2 区间错误直接阻断 ----------
 def _load_rate_book(wb, sheet_name, value_names, kind, required):
     from settlement_rules import rate_value_column
+    try:  # 与 _数据映射.json 读取同款健壮导入：依赖缺失时中文中止，不留半截堆栈
+        from schema_common import locate_column, ColumnAmbiguous, ColumnMissing
+    except Exception as _col_import_error:  # noqa: BLE001 - 依赖缺失时中文中止
+        _bail(f"主档价格／贴花列定位需要 schema_common.py（{_col_import_error}）")
 
     actual = _master_sheet(sheet_name)
     if actual not in wb.sheetnames:
@@ -1062,13 +1069,16 @@ def _load_rate_book(wb, sheet_name, value_names, kind, required):
     ws = wb[actual]
     headers = [str(c.value).strip() if c.value is not None else "" for c in ws[1]]
     def col(names, required_col=True):
-        for name in names:
-            for i, header in enumerate(headers):
-                if name in header:
-                    return i
-        if required_col:
-            _bail(f"主档「{sheet_name}」表缺少列：{'／'.join(names)}")
-        return None
+        try:
+            return locate_column(headers, names, sheet_name=sheet_name, required=required_col)
+        except ColumnMissing as _e:
+            _bail(f"主档「{sheet_name}」表缺少列：{'／'.join(str(a) for a in _e.aliases)}"
+                  f"；实际表头：{_e.headers}")
+        except ColumnAmbiguous as _e:
+            _bail(f"主档「{sheet_name}」表「{_e.alias}」命中多列："
+                  + "、".join(f"第{i + 1}列「{headers[i]}」" for i in _e.hits)
+                  + "；不得任选一列，请只保留一个权威列")
+    ci_bar = col(("商品条码", "条码"))
     ci_bar = col(("商品条码", "条码"))
     ci_value = rate_value_column(headers, value_names, actual)
     ci_start = col(("生效起",))
@@ -1087,31 +1097,33 @@ def _load_rate_book(wb, sheet_name, value_names, kind, required):
         _bail(f"主档「{sheet_name}」表没有任何有效记录")
     return RateBook(rate_rows, kind=kind)
 
+# 同一主档只完整加载一次：先取价格/贴花两本 RateBook，再取 SKU 表，读完统一关闭。
+# 异常归属不变：加载/取价失败仍报价格错，SKU 段失败仍报 SKU 错；finally 保证关闭。
+_wb = None
 try:
-    _rate_wb = openpyxl.load_workbook(CFG["master_path"], data_only=True)
-    PRICE_BOOK = _load_rate_book(_rate_wb, "价格", ("供货价", "结算价", "合同价"), "合同价", True)
-    DECAL_BOOK = _load_rate_book(_rate_wb, "贴花", ("贴花标准",), "贴花标准", False)
-    _rate_wb.close()
-except RuleViolation as _e:
-    _bail(f"价格政策阻断[{_e.code}] {_e.message}")
-except Exception as _e:
-    _bail(f"主档价格／贴花读取失败：{_e}")
-
-# ---------- 读主档 SKU：别名反查 + 结算属性 + 条码全集 ----------
-MS_BAR, MS_ALIAS, MS_SETTLE, MS_NAME = {}, {}, set(), {}
-_mp2 = CFG.get("master_path")
-if _mp2 and os.path.exists(_mp2):
     try:
-        _wb = openpyxl.load_workbook(_mp2, data_only=True)
+        _wb = openpyxl.load_workbook(CFG["master_path"], data_only=True)
+        PRICE_BOOK = _load_rate_book(_wb, "价格", ("供货价", "结算价", "合同价"), "合同价", True)
+        DECAL_BOOK = _load_rate_book(_wb, "贴花", ("贴花标准",), "贴花标准", False)
+    except RuleViolation as _e:
+        _bail(f"价格政策阻断[{_e.code}] {_e.message}")
+    except Exception as _e:
+        _bail(f"主档价格／贴花读取失败：{_e}")
+
+    # ---------- 读主档 SKU：别名反查 + 结算属性 + 条码全集 ----------
+    MS_BAR, MS_ALIAS, MS_SETTLE, MS_NAME = {}, {}, set(), {}
+    try:
         _sku_sheet = _master_sheet("SKU")
         if _sku_sheet in _wb.sheetnames:
             _ws = _wb[_sku_sheet]
             _h = [c.value for c in _ws[1]]
             def _cc(k, d=None):
-                for i, x in enumerate(_h):
-                    if x and k in str(x):
-                        return i
-                return d
+                # 列定位统一走共享实现：精确优先、多列命中阻断（旧版子串先到先得已废除）。
+                try:
+                    hit = _locate_column(_h, (k,), sheet_name="主档·SKU", required=False)
+                except _ColumnAmbiguous as exc:
+                    _bail(f"主档「SKU」表「{k}」命中多列，无法唯一取数：{exc}")
+                return d if hit is None else hit
             ci_bar = _cc("条码", 0); ci_name = _cc("标准品名", 1)
             ci_alias = _cc("别名", 2); ci_attr = _cc("结算属性", 6)
             ci_spec = _cc("规格", 3); ci_unit = _cc("单位", 4)
@@ -1134,6 +1146,9 @@ if _mp2 and os.path.exists(_mp2):
             print(f"主档：SKU {len(MS_BAR)} 条，结算类 {len(MS_SETTLE)} 条，别名 {len(MS_ALIAS)} 条")
     except Exception as _e:
         _bail(f"主档 SKU 表读取失败（{_e}）：结算属性三态校验与条码全集依赖该表，已阻断")
+finally:
+    if _wb is not None:
+        _wb.close()
 
 
 # ---------- 条码 ↔ 物料编码对照（可选；挂账表只有物料编码时用它兜住匹配）----------
@@ -1150,10 +1165,8 @@ if _P_MAP and os.path.exists(_P_MAP):
     for _ri, _r in enumerate(_mmx[_mhr + 1:], _mhr + 2):
         _vb = _cell_of(_r, m_bar)
         _vc = _cell_of(_r, m_code)
-        _vb = "" if _vb is None else str(_vb).strip()
+        _vb = _norm_bar(_vb)
         _vc = "" if _vc is None else str(_vc).strip()
-        if _vb.endswith(".0") and _vb[:-2].isdigit():
-            _vb = _vb[:-2]
         if not _vb and not _vc:
             continue
         if not _vb or not _vc:
@@ -1234,10 +1247,7 @@ if not BATCH and _P_BATCH and os.path.exists(_P_BATCH):
         if _exp is None:
             _q_bad += 1
             continue
-        _bb = _cell_of(_r, q_bar)
-        _bb = "" if _bb is None else str(_bb).strip()
-        if _bb.endswith(".0") and _bb[:-2].isdigit():
-            _bb = _bb[:-2]
+        _bb = _norm_bar(_cell_of(_r, q_bar))
         if not _bb and q_code is not None:
             _bb = _bar_of(_cell_of(_r, q_code))
         _lot_v, _lot_exp = _split_lot(_cell_of(_r, q_lot) if q_lot is not None else None)
@@ -1278,10 +1288,7 @@ if _P_USE and os.path.exists(_P_USE):
     for _ri, _r in enumerate(_umx[_uhr + 1:], _uhr + 2):
         if not _cell_of(_r, u_name):
             continue
-        _ub = _cell_of(_r, u_bar)
-        _ub = "" if _ub is None else str(_ub).strip()
-        if _ub.endswith(".0") and _ub[:-2].isdigit():
-            _ub = _ub[:-2]
+        _ub = _norm_bar(_cell_of(_r, u_bar))
         _uq = _qval(_cell_of(_r, u_qty), f"使用表第 {_ri} 行·数量")
         _uk = _ub or norm(_cell_of(_r, u_name))
         PROMO_USE[_uk] = PROMO_USE.get(_uk, 0) + _uq
@@ -1430,7 +1437,7 @@ for r in rows:
     r["adj"] = _qty(_rule["adjusted_actual_qty"]) if _rule["adjusted_actual_qty"] is not None else 0
     r["diff"] = _qty(_rule["variance_qty"]) if _rule["variance_qty"] is not None else 0
     r["diff_amt"] = float(_rule["variance_display_amount"] or 0)
-    r["settle"] = round(_amount_by_bar.get(r["bar"], 0.0), 2)
+    r["settle"] = float(money(_amount_by_bar.get(r["bar"], 0.0)))
 
 T = dict(q0=0, q10=0, q11=0, theo=0, act=0, adj=0, diff=0, diff_amt=0, settle=0)
 for r in rows:
@@ -1438,9 +1445,9 @@ for r in rows:
         if r.get("absent") and kk in ("act", "adj", "diff", "diff_amt", "q11"):
             continue
         T[kk] += r[kk]
-T = {k: round(v, 2) for k, v in T.items()}
+T = {k: (float(money(v)) if k in ("diff_amt", "settle") else round(v, 2)) for k, v in T.items()}
 
-OPEN_VAL = round(sum(r["q0"] * r["price"] for r in rows), 2)  # 期末合同价参考估值，非 BIP 金额
+OPEN_VAL = float(money(sum(r["q0"] * r["price"] for r in rows)))  # 期末合同价参考估值，非 BIP 金额
 GROSS_SALES = float(RULE_RESULT["gross_sales_amount"])
 RETURN_AMOUNT = float(RULE_RESULT["return_amount"])
 VARIANCE_INCLUDED = bool(RULE_RESULT["variance_included"])
@@ -1576,7 +1583,7 @@ for r in rows:
     _standards = _item["standards"]
     TH_ROWS.append(dict(name=r["name"], bar=r["bar"], qty=_item["qty"],
                         std=next(iter(_standards)) if len(_standards) == 1 else None,
-                        mixed=len(_standards) > 1, amt=round(_item["amt"], 2)))
+                        mixed=len(_standards) > 1, amt=float(money(_item["amt"]))))
 _check_identity("贴花逐笔独立复算", TH_TOTAL, sum(x["amt"] for x in TH_ROWS))
 if TH_ACTIVE:
     print(f"贴花：{len(TH_ROWS)} 个动销 SKU，合计 {TH_TOTAL:,.2f} 元（正常销售取 {P_END} 标准，退货按原销售标准）")
@@ -2396,7 +2403,7 @@ for i, x in enumerate(rows, 1):
     cell = ws.cell(row=r, column=5); cell.value = x["bar"]; cell.font = F(9); cell.alignment = A("center"); cell.number_format = "@"; cell.fill = fill(bg)
     mput(ws, r, 6, r, 6, x["unit"], F(9), A("center"), bg)
     cell = ws.cell(row=r, column=7); num(cell, x["price"], "#,##0.00"); cell.fill = fill(bg)
-    cell = ws.cell(row=r, column=8); num(cell, round(x["q0"] * x["price"], 2), "#,##0.00"); cell.fill = fill(bg)
+    cell = ws.cell(row=r, column=8); num(cell, float(money(x["q0"] * x["price"])), "#,##0.00"); cell.fill = fill(bg)
     mput(ws, r, 9, r, 9, PRICE_BOOK.rate_on(x["bar"], P_END).source or "合同价格政策", F(8, c=DGREY), A("left", "center", True, 1), bg)
     note = ("本期 BIP 期初为 0" if abs(x["q0"]) <= 1e-9
             else ("初始数量与 BIP 期初数量不同，请核对" if abs(x["init"] - x["q0"]) > 1e-9 else "—"))
@@ -2557,8 +2564,8 @@ for i, x in enumerate(inv_sorted, 1):
     cell = ws.cell(row=r, column=10)
     if st:
         num(cell, st["price"], "#,##0.00"); cell.fill = fill(bg)
-        cell = ws.cell(row=r, column=11); num(cell, round(x["qty"] * st["price"], 2), "#,##0.00"); cell.fill = fill(bg)
-        tot_v += round(x["qty"] * st["price"], 2)
+        cell = ws.cell(row=r, column=11); num(cell, float(money(x["qty"] * st["price"])), "#,##0.00"); cell.fill = fill(bg)
+        tot_v += float(money(x["qty"] * st["price"]))
     else:
         cell.value = "—"; cell.font = F(9, c="A6A6A6"); cell.alignment = A("center"); cell.fill = fill(bg)
         cell = ws.cell(row=r, column=11); cell.value = "—"; cell.font = F(9, c="A6A6A6")
@@ -2576,7 +2583,7 @@ cell.fill = fill(NAVY); cell.border = Border(left=THIN, right=THIN, top=MED, bot
 for j in (7, 8, 9, 10):
     cell = ws.cell(row=r, column=j); cell.value = None; cell.fill = fill(NAVY)
     cell.border = Border(left=THIN, right=THIN, top=MED, bottom=MED)
-cell = ws.cell(row=r, column=11); num(cell, round(tot_v, 2), "#,##0.00"); cell.font = F(10, True, WHITE)
+cell = ws.cell(row=r, column=11); num(cell, float(money(tot_v)), "#,##0.00"); cell.font = F(10, True, WHITE)
 cell.fill = fill(NAVY); cell.border = Border(left=THIN, right=THIN, top=MED, bottom=MED)
 mput(ws, r, 12, r, 12, "按期末合同价参考估值", F(8, False, WHITE), A("center"), NAVY)
 ws.row_dimensions[r].height = 26
@@ -3003,16 +3010,12 @@ def _write_json_atomic(path, payload):
     os.replace(_tmp, path)
 
 
-import hashlib
-def _source_sha256(path):
-    digest = hashlib.sha256()
-    with open(path, "rb") as _source_fh:
-        for chunk in iter(lambda: _source_fh.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+try:  # 与主档取列同款健壮导入：哈希统一走 schema_common 的 1MiB 分块实现（结果与整读逐字节一致）
+    from schema_common import sha256_file as _sha256_file
+except Exception as _sha_import_error:  # noqa: BLE001 - 依赖缺失时中文中止
+    _bail(f"输出凭证哈希需要 schema_common.py（{_sha_import_error}）")
 
-with open(OUT, "rb") as _fh:
-    _workbook_sha = hashlib.sha256(_fh.read()).hexdigest()
+_workbook_sha = _sha256_file(OUT)
 _WRITEBACK = {
     "period": PERIOD, "asof": ASOF,
     "contract_no": CONTRACT_NO, "business_type": "铺货代销", "statement_no": STATEMENT_NO,
@@ -3032,9 +3035,9 @@ _RESULT = {
     "rule_result": jsonable(RULE_RESULT),
     "writeback": _WRITEBACK,
     "writeback_path": _WRITEBACK_PATH,
-    "master": {"path": os.path.abspath(_MASTER), "sha256": _source_sha256(_MASTER)},
+    "master": {"path": os.path.abspath(_MASTER), "sha256": _sha256_file(_MASTER)},
     "sources": {
-        role: {"path": os.path.abspath(path), "sha256": _source_sha256(path)}
+        role: {"path": os.path.abspath(path), "sha256": _sha256_file(path)}
         for role, path in (("jia", _P_JIA), ("sales", _P_OCT), ("inventory", _P_INV))
     },
 }

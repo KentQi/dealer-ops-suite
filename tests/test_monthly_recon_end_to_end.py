@@ -199,7 +199,16 @@ class MonthlyBuyoutWorkbookTest(unittest.TestCase):
         self.assertEqual(len(packet["priced_rows"]), 2)
         self.assertEqual(len(packet["tiehua_rows"]), 2)
         self.assertEqual(packet["sku_rows"][0]["sales_qty_for_decal_only"], 15)
-        self.assertEqual(packet["rule_result"], result["rule_result"])
+        rule_ref = packet["rule_result"]
+        self.assertEqual(set(rule_ref), {"_external", "sha256", "rows", "business_type"})
+        self.assertEqual(rule_ref["_external"], "202610月结买断对账_复核包_rule_result.json")
+        self.assertEqual(rule_ref["rows"], 4)  # 签收 2 + 退货 0 + 贴花动销 2
+        self.assertEqual(rule_ref["business_type"], "monthly_buyout")
+        sidecar = self.base / "_复核记录" / rule_ref["_external"]
+        with open(sidecar, encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh), result["rule_result"])
+        self.assertEqual(rule_ref["sha256"],
+                         __import__("hashlib").sha256(sidecar.read_bytes()).hexdigest())
         self.assertEqual({row["role"] for row in packet["sources"]}, {"receipts", "returns", "sales"})
 
     def test_multiple_price_columns_are_blocked(self):

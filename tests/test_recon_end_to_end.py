@@ -246,7 +246,20 @@ class ConsignmentWorkbookTest(unittest.TestCase):
             self.assertEqual(packet["figures"]["diff_qty"], 3)
             self.assertNotIn("closing_inventory_value", packet["figures"])
             self.assertEqual(len(packet["priced_rows"]), 2)
-            self.assertEqual(packet["rule_result"], result["rule_result"])
+            rule_ref = packet["rule_result"]
+            self.assertEqual(set(rule_ref), {"_external", "sha256", "rows", "business_type"})
+            self.assertEqual(rule_ref["_external"], "202610铺货代销对账_复核包_rule_result.json")
+            self.assertEqual(rule_ref["rows"], 2)
+            self.assertEqual(rule_ref["business_type"], "consignment")
+            sidecar = self.base / "_复核记录" / rule_ref["_external"]
+            with open(sidecar, encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh), result["rule_result"])
+            self.assertEqual(rule_ref["sha256"],
+                             __import__("hashlib").sha256(sidecar.read_bytes()).hexdigest())
+            # issue #6 防回填钉死：rule_result 逐笔内容不得回流包内，体积收敛不被悄悄撤销
+            packet_text = json.dumps(packet)
+            self.assertNotIn("quantity_reconciliation", packet_text)
+            self.assertNotIn("priced_lines", packet_text)
             wb = openpyxl.load_workbook(self.out)
             wb["00-对账说明"]["A1"] = str(wb["00-对账说明"]["A1"].value) + "（附表已保存）"
             wb.save(self.out)
@@ -255,12 +268,113 @@ class ConsignmentWorkbookTest(unittest.TestCase):
             refresh_settlement_result(str(self.out))
             refreshed = build_packet(str(self.out), str(self.master))
             self.assertEqual(refreshed["workbook"]["sha256"], __import__("hashlib").sha256(self.out.read_bytes()).hexdigest())
-            self.assertEqual(refreshed["rule_result"], result["rule_result"])
+            # v17 只同步工作簿路径与哈希，rule_result 不变 → 侧车内容仍等于凭证内规则底稿
+            refreshed_ref = refreshed["rule_result"]
+            self.assertEqual(refreshed_ref["_external"], rule_ref["_external"])
+            self.assertEqual(refreshed_ref["sha256"], rule_ref["sha256"])
+            with open(self.base / "_复核记录" / refreshed_ref["_external"], encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh), result["rule_result"])
         finally:
             if previous is None:
                 os.environ.pop("RECON_CFG", None)
             else:
                 os.environ["RECON_CFG"] = previous
+
+    def _packet_with_credential(self, out_path):
+        """出账后按默认配置生成新格式复核包（rule_result 外置），返回 packet dict。"""
+        sys.path.insert(0, str(SCRIPTS))
+        from make_review_packet import build_packet
+        cfg = {
+            "business_type": "consignment", "base_dir": str(self.base), "master_path": str(self.master),
+            "party_a": {"name": "脱敏甲方"}, "party_b": {"name": "脱敏乙方"},
+            "contract": {"no": "TEST-2026", "method": "铺货代销", "basis": "实销实结"},
+            "period": {"start": "2026-10-01", "end": "2026-10-31", "asof": "2026-10-31"},
+            "sources": {"jia": self.jia.name, "sales": self.sales.name, "inventory": self.inventory.name},
+        }
+        previous = os.environ.get("RECON_CFG")
+        os.environ["RECON_CFG"] = json.dumps(cfg, ensure_ascii=False)
+        try:
+            packet = build_packet(str(self.out), str(self.master), out_path=str(out_path))
+        finally:
+            if previous is None:
+                os.environ.pop("RECON_CFG", None)
+            else:
+                os.environ["RECON_CFG"] = previous
+        out_path.write_text(json.dumps(packet, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return packet
+
+    def _pass_report(self, packet, path):
+        """按复核包生成一份 R1–R10 全通过的合法报告。"""
+        report = {
+            "schema": "dealer-ops/review-report@1",
+            "reviewer": {"name": "测试复核", "model": "test"},
+            "reviewed_at": "2026-11-20T08:00:00+08:00",
+            "workbook_sha256": packet["workbook"]["sha256"],
+            "verdict": "通过",
+            "checklist": [{"id": "R%d" % index, "result": "通过", "note": "已核对"}
+                          for index in range(1, 11)],
+            "findings": [], "summary": "复核通过",
+            "period": {"start": "2026-10-01", "end": "2026-10-31"},
+        }
+        path.write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
+        return report
+
+    def _run_apply(self, report_path, packet_path):
+        return subprocess.run([sys.executable, str(SCRIPTS / "apply_review.py"), str(self.out),
+                               str(report_path), "--packet", str(packet_path), "--apply"],
+                              text=True, capture_output=True, timeout=30)
+
+    def test_apply_review_rejects_missing_or_tampered_rule_result_sidecar(self):
+        result, _writeback, _run = self.run_engine()
+        packet_path = self.base / "packet.json"
+        report_path = self.base / "report.json"
+        packet = self._packet_with_credential(packet_path)
+        sidecar = self.base / packet["rule_result"]["_external"]
+        self.assertTrue(sidecar.exists())
+        self._pass_report(packet, report_path)
+
+        sidecar.unlink()  # 侧车缺失：须拒绝且不写复核表/复核锁
+        run = self._run_apply(report_path, packet_path)
+        self.assertNotEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("复核包引用的规则底稿不存在", run.stderr)
+        self.assertIn("packet_rule_result.json", run.stderr)
+        self.assertFalse((self.base / "_复核记录" / "复核锁.json").exists())
+
+        sidecar.write_text(json.dumps(result["rule_result"], ensure_ascii=False) + "\n",
+                           encoding="utf-8")  # 字节变了（非缩进重写）→ 哈希不符
+        run = self._run_apply(report_path, packet_path)
+        self.assertNotEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("规则底稿与复核包不一致", run.stderr)
+        self.assertIn("重新生成复核包", run.stderr)
+        self.assertFalse((self.base / "_复核记录" / "复核锁.json").exists())
+
+    def test_legacy_inline_rule_result_packet_still_applies(self):
+        # 旧格式（rule_result 整体内联的历史归档包）不做侧车校验，仍可 --apply
+        result, _writeback, _run = self.run_engine()
+        report_path = self.base / "report.json"
+        packet = self._packet_with_credential(self.base / "legacy_packet.json")
+        legacy = dict(packet)
+        legacy["rule_result"] = result["rule_result"]
+        legacy_path = self.base / "legacy_packet.json"
+        legacy_path.write_text(json.dumps(legacy, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        self._pass_report(packet, report_path)
+        run = self._run_apply(report_path, legacy_path)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("[完成] 复核有效", run.stdout)
+
+    def test_no_credential_mode_writes_no_sidecar(self):
+        self.run_engine()
+        legacy_dir = self.base / "无凭证"
+        legacy_dir.mkdir()
+        legacy_workbook = legacy_dir / "2025历史工作簿.xlsx"
+        legacy_workbook.write_bytes(self.out.read_bytes())
+        sys.path.insert(0, str(SCRIPTS))
+        from make_review_packet import build_packet
+        packet = build_packet(str(legacy_workbook))
+        self.assertIsNone(packet["rule_result"])
+        self.assertEqual(packet["priced_rows"], [])
+        self.assertTrue(any("未找到同目录 _结算结果.json" in warning for warning in packet["warnings"]))
+        self.assertFalse((legacy_dir / "_复核记录" / "2025历史工作簿_复核包_rule_result.json").exists())
 
     def test_multiple_price_columns_are_blocked(self):
         wb = openpyxl.load_workbook(self.master)

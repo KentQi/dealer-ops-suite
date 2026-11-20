@@ -6,6 +6,10 @@ import os
 import re
 from decimal import Decimal
 
+# 合计列的舍入口径收敛到权威金额规则：Decimal 和先按 HALF_UP 量化到分，再交 _number 渲染，
+# 保证「合计 == 逐行舍入后之和」不变式（_number 本体是 JSON 数值渲染归一器，不是舍入决策点）。
+from settlement_rules import money
+
 
 SCHEMA = "dealer-ops/settlement-result@1"
 
@@ -84,7 +88,8 @@ def _total(rows, key):
     values = [row.get(key) for row in rows if row.get(key) is not None]
     if not values:
         return None
-    return _number(sum((Decimal(str(value)) for value in values), Decimal("0")))
+    total = sum((Decimal(str(value)) for value in values), Decimal("0"))
+    return _number(money(total))
 
 
 def _name_map(workbook):

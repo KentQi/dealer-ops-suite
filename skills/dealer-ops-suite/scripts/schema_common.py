@@ -233,6 +233,101 @@ def match_columns(header_row, wanted_headers, min_score=0.34):
     return matched
 
 
+# ---------------- 共享内核原语：列定位与条码归一化 ----------------
+# 列定位三套（monthly_recon_engine.column / recon_engine.col / check_policy.map_columns）
+# 与条码归一化三套（settlement_rules.barcode_of / monthly_recon_engine.bar /
+# check_policy.norm_barcode）收敛到本节的单一实现：列定位语义以 monthly column() 为准
+# （多列命中即阻断），条码归一化语义以 settlement_rules.barcode_of() 为准。
+
+
+class ColumnLookupError(Exception):
+    """列定位失败基类；记录别名、工作表名与实际表头，供调用方透传中文报错。"""
+
+    def __init__(self, message, aliases=(), sheet_name="", headers=()):
+        super().__init__(message)
+        self.aliases = list(aliases)
+        self.sheet_name = sheet_name
+        self.headers = list(headers)
+
+
+class ColumnAmbiguous(ColumnLookupError):
+    """同一别名命中多列，无法唯一取数；额外记录触发别名与命中列号。"""
+
+    def __init__(self, message, alias, hits, aliases=(), sheet_name="", headers=()):
+        super().__init__(message, aliases=aliases, sheet_name=sheet_name, headers=headers)
+        self.alias = alias
+        self.hits = list(hits)
+
+
+class ColumnMissing(ColumnLookupError):
+    """两轮匹配后仍无命中且 required=True。"""
+
+
+def _header_norm(value):
+    """表头／别名的轻量归一化：去空白、去成对括号内容；与 rate_value_column/column() 一致。"""
+    text = re.sub(r"\s+", "", str(value or ""))
+    return re.sub(r"[(（][^)）]*[)）]", "", text)
+
+
+def locate_column(headers, aliases, *, sheet_name="", required=True,
+                  allow_substring=True, exact_only_tokens=("数量", "销量", "时间", "日期")):
+    """按别名在表头中定位唯一列（返回 0 基列号）；语义与 monthly_recon_engine.column() 一致。
+
+    第一轮逐别名做归一化全等匹配，同级多列命中抛 ColumnAmbiguous；未命中再做子串回退
+    （泛化词 exact_only_tokens 只接受完整表头，防止命中“发货数量／发货时间”），子串多列
+    命中同样阻断。两轮都无命中：required=True 抛 ColumnMissing（message 含别名与工作表名），
+    required=False 返回 None。
+    """
+    headers = list(headers or [])
+    aliases = list(aliases or [])
+    skip_substring = tuple(exact_only_tokens or ())
+    prefix = "工作表「%s」" % sheet_name if sheet_name else "源表"
+    candidates = [(index, _header_norm(header)) for index, header in enumerate(headers)
+                  if _header_norm(header)]
+    for alias in aliases:  # 第一轮：归一化后全等匹配
+        target = _header_norm(alias)
+        hits = [index for index, header in candidates if header == target]
+        if len(hits) > 1:
+            raise ColumnAmbiguous(
+                prefix + "表头「%s」命中多列，无法唯一取数：%s" % (alias, headers),
+                alias, hits, aliases=aliases, sheet_name=sheet_name, headers=headers)
+        if hits:
+            return hits[0]
+    if allow_substring:  # 第二轮：子串回退
+        for alias in aliases:
+            target = _header_norm(alias)
+            if target in skip_substring:
+                continue
+            hits = [index for index, header in candidates if target in header]
+            if len(hits) > 1:
+                raise ColumnAmbiguous(
+                    prefix + "表头包含「%s」的列不唯一，已停止取数：%s" % (alias, headers),
+                    alias, hits, aliases=aliases, sheet_name=sheet_name, headers=headers)
+            if hits:
+                return hits[0]
+    if required:
+        raise ColumnMissing(
+            prefix + "缺少列：%s；实际表头：%s" % ("／".join(str(alias) for alias in aliases), headers),
+            aliases=aliases, sheet_name=sheet_name, headers=headers)
+    return None
+
+
+def normalize_barcode(value):
+    """条码归一化：与 settlement_rules.barcode_of() 语义完全一致。
+
+    None → ""；整值 float → str(int(value))；字符串去首尾空白后若以 ".0" 结尾且前缀
+    全数字则剥掉尾巴；其余（含 int）→ str(value).strip()。
+    """
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    text = str(value).strip()
+    if text.endswith(".0") and text[:-2].isdigit():
+        text = text[:-2]
+    return text
+
+
 # ---------------- 目录角色识别 ----------------
 def guess_role(filename):
     """按文件名关键词判角色（规则与 load_master.py 相同）；识别不到返回 None。"""
@@ -410,3 +505,59 @@ read_workbook = excel_reader
 def required_fields(role):
     """角色下缺失即阻断的规范字段列表。"""
     return [name for name, cfg in SOURCE_ROLES[role]["fields"].items() if cfg["required"]]
+
+
+# ---------------- 共享内核原语：多字段表头映射 ----------------
+# check_policy.map_columns 收敛前的普通字段别名循环（去空白归一化 + note 关键词豁免 +
+# 「别名全等或包含且不超长」命中 + 同列双字段阻断）收敛为下面的单一实现。
+# 注意：本节归一化只去空白，与 locate_column 的 _header_norm（还剥成对括号内容）
+# 是两套语义，各自服务各自的调用方，不互相污染。
+
+
+class FieldColumnConflict(ColumnLookupError):
+    """一列同时命中两个字段；属性：header、left_field、right_field。"""
+
+    def __init__(self, message, header, left_field, right_field, aliases=(), sheet_name="", headers=()):
+        super().__init__(message, aliases=aliases, sheet_name=sheet_name, headers=headers)
+        self.header = header
+        self.left_field = left_field
+        self.right_field = right_field
+
+
+def map_field_columns(headers, field_aliases, *, max_suffix=5, note_keywords=(), assigned=None):
+    """多字段表头映射原语：返回 ({field: 0 基列号}, notes 0 基列号列表)。
+
+    语义与 check_policy.map_columns 收敛前的别名循环逐字一致：
+    - headers 为原始表头值列表；归一化仅去空白（None → ""），不做括号／小写处理；
+    - 空表头跳过；表头含 note_keywords 任一关键词 → 计入 notes 并不再参与字段匹配；
+    - 每个 field 按 field_aliases 字典迭代序尝试：表头等于别名，或别名出现在表头中
+      且 len(表头) <= len(别名) + max_suffix，即命中；
+    - 同一列命中两个字段（含 assigned 预占用 {0 基列号: field}）→ 抛 FieldColumnConflict；
+      同一 field 已命中过则跳过（先到先得，同义多列不阻断，与现行循环一致）；
+    - assigned 里已出现的字段视为已映射（等价于现行 `if field in mapping: continue` 对
+      价格／贴花等预先定位字段的跳过），它们自己的列被自己命中不阻断，被其他字段命中才阻断。
+    返回 0 基列号，调用方自行 +1 转 1 基。
+    """
+    keywords = tuple(note_keywords or ())
+    taken = dict(assigned or {})
+    pre_mapped = set(taken.values())
+    mapping, notes = {}, []
+    for col, value in enumerate(headers):
+        header = "" if value is None else re.sub(r"\s+", "", str(value))
+        if not header:
+            continue
+        if any(word in header for word in keywords):
+            notes.append(col)
+            continue
+        for field, aliases in field_aliases.items():
+            if field in mapping or field in pre_mapped:
+                continue
+            if any(header == alias or (alias in header and len(header) <= len(alias) + max_suffix)
+                   for alias in aliases):
+                if col in taken:
+                    raise FieldColumnConflict(
+                        f"表头「{header}」同时映射为 {taken[col]} 与 {field}，请修正表头",
+                        header, taken[col], field, headers=headers)
+                mapping[field] = col
+                taken[col] = field
+    return mapping, notes
