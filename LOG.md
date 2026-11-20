@@ -1,5 +1,10 @@
 # 会话日志(最新在上)
 
+## 2026-11-21 01:59 | model=zcode-glm-5.3-flash | task=T009 完成
+- 摘要: T009 完成：对抗测试层整层迁移 + 六类回归钉子落地（d234f6a，+68 用例）。合同线：fill_sim/fixtures/test_attacks(12)/test_workflow(5) 迁入，verify_fill 全部走 contract_release.build_release 真凭证夹具（零代码后门）；test_contract_validators 收纳 24 校验器用例 + 6 spec 完整性检查（pytest 参数化全部以 subTest 保留）。对账线：test_public_copy_gate(13)/test_v17_gates(3)/test_deterministic_rerun(2)/test_recon_mapping(3)。迁移过程挖出并修复两个生产级真 bug：①spec region 示例「示例省/示例市」被 check_region 按设计拒绝——示例值过不了自己的校验器，已改「示例」并恢复全量哨兵零豁免；②recon_engine 01-对账单说明自带 l1 禁词「主档」——门禁会拦下引擎产出的每一张对账单，已改「客户台账」。验证：pytest 223 passed / unittest 206 OK / compileall 过；品牌 scrub 后 JL/肌侣零残留。
+- 事实(v2): mode=single | 文件 0 | ± +0/-0 | base=- | sha=- | branch=main || 验收: 未要求 | verify: PASS 12·WARN 0·ERROR 0 | 耗时: 0s
+- 留给下一个: T010 两个前置：①.relay/manifest.json allowedTopLevel 加 .github（白名单已含 requirements.txt）；②tools/validate.py 迁入时把 .claude-plugin/ 检查降级为可选（合并仓无该目录，否则第一天就红）。另 T011 前置已查明：recon_engine 01-对账单说明#6 的 l1 禁词「主档」已修（d234f6a，客户台账）；T011 实施时必须验证 apply_v17 裁剪后产物能过 A1-A6 全门禁（原始产出命中 08/09 内部附表属预期，裁剪后待实测），并核对 08/09 表名与 koujing sheet_map 对应
+
 ## 2026-11-21 01:33 | model=zcode-glm-5.3-flash | task=T008 完成
 - 摘要: T008 完成：锁定表静默 no-op 改显式披露（97251c9）。verify_fill 在 locked_content 为空时输出「未登记（本次未校验；接真实附件一时按 SANITIZATION.md 登记）」替代静默「完整」；validation-rules.md 两处/field-map.md/合同编辑.md/scan_blanks docstring 收口为如实表述（登记即逐格比对、公开版未登记）；裁决落 DECISIONS（维持脱敏、否决补数据、否决维持假绿）。顺带完成 L6 术语彻底退役：README 能力表与边界、口径确认协议两处、复核协议标题与正文、对外文案治理 §7 标题与正文，活文档 L6 命中清零（archive 历史件不动）。pytest 155 passed。
 - 事实(v2): mode=single | 文件 0 | ± +0/-0 | base=- | sha=- | branch=main || 验收: 未要求 | verify: PASS 12·WARN 0·ERROR 0 | 耗时: 0s
