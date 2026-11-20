@@ -27,16 +27,11 @@ import subprocess
 import sys
 import tempfile
 
+# 文件哈希唯一实现在 schema_common（issue #5 收敛）；保留 file_sha256 名称兼容既有导入。
+from schema_common import sha256_file as file_sha256
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 BUILD_PLAN = os.path.join(HERE, "build_plan.py")
-
-
-def file_sha256(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def load_values(path):

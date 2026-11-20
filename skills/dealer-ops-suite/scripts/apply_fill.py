@@ -27,7 +27,6 @@ plan.json 结构：
   kind=cell    → 整体改写单元格文本（table/row/col 为 0 基，脚本内部转 1 基）
 """
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -40,6 +39,7 @@ PY = sys.executable
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from plan_trust import check_plan, check_plan_selfconsistency, load_values, canon  # noqa: E402
+from schema_common import sha256_file  # noqa: E402
 
 
 class EDSDKError(RuntimeError):
@@ -109,11 +109,7 @@ def same_file(a, b):
 
 def content_hash(path):
     try:
-        h = hashlib.sha256()
-        with open(path, "rb") as fh:
-            for chunk in iter(lambda: fh.read(1 << 20), b""):
-                h.update(chunk)
-        return h.hexdigest()
+        return sha256_file(path)
     except OSError:
         return None
 

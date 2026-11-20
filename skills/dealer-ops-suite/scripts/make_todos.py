@@ -21,6 +21,8 @@ import openpyxl
 
 import workdays
 
+from schema_common import sha256_file
+
 SCHEMA = "dealer-ops/todos@1"
 
 
@@ -95,11 +97,7 @@ def adjust_payment(due, rule, calendar):
 
 
 def digest_file(path):
-    digest = hashlib.sha256()
-    with open(path, "rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return sha256_file(path)
 
 
 def generate(master, period, calendar=None):

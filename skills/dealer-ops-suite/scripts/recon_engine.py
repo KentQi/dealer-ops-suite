@@ -647,6 +647,13 @@ def _iso_day(value):
 
 _PART = {}
 
+try:
+    from schema_common import normalize_barcode as _norm_bar
+except Exception as _norm_import_error:  # noqa: BLE001 - 依赖缺失时中文中止
+    raise SystemExit("[中止] 条码归一化需要 schema_common.py（%s）；请确认脚本目录完整"
+                     % _norm_import_error)
+
+
 def _bail(msg):
     """失败时先把已算出的关键数打到 stderr，便于定位。"""
     sys.stderr.write("\n[自检未通过] " + msg + "\n")
@@ -841,10 +848,7 @@ inv = []
 for _ri, r in enumerate(ws_inv.iter_rows(min_row=_hr + 1, values_only=True), _hr + 1):
     if not r or len(r) <= max(k_name, k_qty) or not r[k_name]:
         continue
-    _bar = _cell_of(r, k_bar)
-    _bar = "" if _bar is None else str(_bar).strip()
-    if _bar.endswith(".0") and _bar[:-2].isdigit():
-        _bar = _bar[:-2]
+    _bar = _norm_bar(_cell_of(r, k_bar))
     _retail = _cell_of(r, k_retail)
     _brand = _cell_of(r, k_brand)
     inv.append(dict(name=str(r[k_name]).strip(),
@@ -906,10 +910,7 @@ for _ri, r in enumerate((ws_nov.iter_rows(min_row=_hr2 + 1, values_only=True) if
     _q = _num_val(_cell_of(r, n_num), f"次月销售表第 {_ri} 行·销售数量")
     if not _q:
         continue
-    _bar = _cell_of(r, n_bar)
-    _bar = "" if _bar is None else str(_bar).strip()
-    if _bar.endswith(".0") and _bar[:-2].isdigit():
-        _bar = _bar[:-2]
+    _bar = _norm_bar(_cell_of(r, n_bar))
     if not _bar:
         _iv = inv_by_n.get(norm(_cell_of(r, n_name)))
         _bar = _iv["bar"] if _iv else ""
@@ -989,10 +990,7 @@ for _ri, r in enumerate(ws_oct.iter_rows(min_row=_hr3 + 1, values_only=True), _h
     if txn_kind == "sale" and txn_text not in ("销售", "动销", "sale"):
         _bail(f"销售流水第 {_ri} 行业务类型无法识别：{txn_text!r}")
     q = -abs(raw_q) if txn_kind == "return" else raw_q
-    _bar = _cell_of(r, o_bar)
-    _bar = "" if _bar is None else str(_bar).strip()
-    if _bar.endswith(".0") and _bar[:-2].isdigit():
-        _bar = _bar[:-2]
+    _bar = _norm_bar(_cell_of(r, o_bar))
     if not _bar:
         _bail(f"销售流水第 {_ri} 行缺少商品条码。销售流水必须带条码，不得按品名猜算，请核对导出文件")
     _store = _cell_of(r, o_store)
@@ -1163,10 +1161,8 @@ if _P_MAP and os.path.exists(_P_MAP):
     for _ri, _r in enumerate(_mmx[_mhr + 1:], _mhr + 2):
         _vb = _cell_of(_r, m_bar)
         _vc = _cell_of(_r, m_code)
-        _vb = "" if _vb is None else str(_vb).strip()
+        _vb = _norm_bar(_vb)
         _vc = "" if _vc is None else str(_vc).strip()
-        if _vb.endswith(".0") and _vb[:-2].isdigit():
-            _vb = _vb[:-2]
         if not _vb and not _vc:
             continue
         if not _vb or not _vc:
@@ -1247,10 +1243,7 @@ if not BATCH and _P_BATCH and os.path.exists(_P_BATCH):
         if _exp is None:
             _q_bad += 1
             continue
-        _bb = _cell_of(_r, q_bar)
-        _bb = "" if _bb is None else str(_bb).strip()
-        if _bb.endswith(".0") and _bb[:-2].isdigit():
-            _bb = _bb[:-2]
+        _bb = _norm_bar(_cell_of(_r, q_bar))
         if not _bb and q_code is not None:
             _bb = _bar_of(_cell_of(_r, q_code))
         _lot_v, _lot_exp = _split_lot(_cell_of(_r, q_lot) if q_lot is not None else None)
@@ -1291,10 +1284,7 @@ if _P_USE and os.path.exists(_P_USE):
     for _ri, _r in enumerate(_umx[_uhr + 1:], _uhr + 2):
         if not _cell_of(_r, u_name):
             continue
-        _ub = _cell_of(_r, u_bar)
-        _ub = "" if _ub is None else str(_ub).strip()
-        if _ub.endswith(".0") and _ub[:-2].isdigit():
-            _ub = _ub[:-2]
+        _ub = _norm_bar(_cell_of(_r, u_bar))
         _uq = _qval(_cell_of(_r, u_qty), f"使用表第 {_ri} 行·数量")
         _uk = _ub or norm(_cell_of(_r, u_name))
         PROMO_USE[_uk] = PROMO_USE.get(_uk, 0) + _uq
