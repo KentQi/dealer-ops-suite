@@ -22,4 +22,4 @@
 - 文档变更须保持 `docs/source/*.json` 与 `docs/*.html`（Pages 产物）同步。
 
 ## 4. 开放问题(需人类裁决;裁决后落 DECISIONS 并删行)
-- PR #9（BIP 脱敏 + 文档同步，分支 `fix/public-copy-sync`）等待人工合并；合并后确认 Pages 重建。
+-(空)
