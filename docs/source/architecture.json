@@ -5,7 +5,13 @@
     "title": "dealer-ops-suite 技能架构",
     "locale": "zh-CN",
     "output": "dealer-ops-suite-architecture.html",
-    "quality_profile": "showcase"
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/KentQi/dealer-ops-suite.git",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "dd63ec1a6c9b8753d85210d5b7e1bdcc079633e0"
+    }
   },
   "components": [
     {
@@ -13,57 +19,34 @@
       "type": "external",
       "label": "使用者",
       "sublabel": "商务 / 财务 / 管理者",
-      "pos": [
-        40,
-        300
-      ],
-      "size": [
-        110,
-        60
-      ]
+      "pos": [40, 290],
+      "size": [110, 60]
     },
     {
       "id": "agent",
       "type": "frontend",
       "label": "Agent Harness",
       "sublabel": "会话入口",
-      "pos": [
-        220,
-        300
-      ],
-      "size": [
-        140,
-        64
-      ]
+      "pos": [230, 290],
+      "size": [150, 64]
     },
     {
-      "id": "automation",
+      "id": "localtodo",
       "type": "messagebus",
       "label": "本地待办",
-      "sublabel": "只写 _待办.json，不创建定时任务",
-      "pos": [
-        220,
-        520
-      ],
-      "size": [
-        140,
-        64
-      ]
+      "sublabel": "写 _待办.json，不建定时任务",
+      "pos": [230, 480],
+      "size": [160, 64]
     },
     {
       "id": "manifest",
       "type": "security",
       "label": "plugin.json",
       "sublabel": "插件清单",
-      "tag": "v1.0.0",
-      "pos": [
-        440,
-        120
-      ],
-      "size": [
-        140,
-        60
-      ]
+      "tag": "v2.0.0",
+      "pos": [460, 90],
+      "size": [140, 60],
+      "sources": [{"path": "plugin.json", "line": 1, "end_line": 8}]
     },
     {
       "id": "skillmd",
@@ -71,239 +54,161 @@
       "label": "SKILL.md",
       "sublabel": "意图路由 + 硬规则",
       "tag": "268 行",
-      "pos": [
-        440,
-        300
-      ],
-      "size": [
-        150,
-        80
+      "pos": [460, 290],
+      "size": [150, 80],
+      "sources": [
+        {"path": "skills/dealer-ops-suite/SKILL.md", "line": 13, "end_line": 41, "label": "业务顺序与硬规则"},
+        {"path": "skills/dealer-ops-suite/SKILL.md", "line": 43, "end_line": 58, "label": "意图路由"}
       ]
     },
     {
       "id": "contract",
       "type": "backend",
       "label": "合同包生成与审阅",
-      "sublabel": "填写 + 交叉校验 + 风险清单",
-      "pos": [
-        680,
-        110
-      ],
-      "size": [
-        160,
-        64
+      "sublabel": "填写 + 双门禁 + LLM 风险清单",
+      "pos": [700, 70],
+      "size": [180, 64],
+      "sources": [
+        {"path": "skills/dealer-ops-suite/SKILL.md", "line": 60, "end_line": 105, "label": "审阅与双门禁"},
+        {"path": "skills/dealer-ops-suite/scripts/review_contract_package.py", "line": 395, "end_line": 480, "label": "审阅主流程"}
+      ]
+    },
+    {
+      "id": "master",
+      "type": "backend",
+      "label": "客户主档 A1–A5",
+      "sublabel": "候选 → 确认页 → 人工确认写入",
+      "pos": [700, 190],
+      "size": [180, 64],
+      "sources": [
+        {"path": "skills/dealer-ops-suite/SKILL.md", "line": 125, "end_line": 155, "label": "A1-A5 确认链"},
+        {"path": "skills/dealer-ops-suite/scripts/apply_contract.py", "line": 147, "end_line": 167, "label": "确认门槛"}
       ]
     },
     {
       "id": "recon",
       "type": "backend",
-      "label": "对账工作",
-      "sublabel": "B 段 · 建档→确认→出账",
-      "pos": [
-        680,
-        250
-      ],
-      "size": [
-        160,
-        64
+      "label": "对账双引擎",
+      "sublabel": "铺货代销 / 月结买断",
+      "tag": "两套口径",
+      "pos": [700, 310],
+      "size": [180, 64],
+      "sources": [
+        {"path": "skills/dealer-ops-suite/SKILL.md", "line": 172, "end_line": 233, "label": "两种对账模式"},
+        {"path": "skills/dealer-ops-suite/scripts/recon_engine.py", "line": 681, "end_line": 681, "label": "铺货引擎入口"},
+        {"path": "skills/dealer-ops-suite/scripts/monthly_recon_engine.py", "line": 250, "end_line": 250, "label": "月结引擎入口"}
+      ]
+    },
+    {
+      "id": "ledger",
+      "type": "backend",
+      "label": "台账待办与回写",
+      "sublabel": "make_todos.py + writeback_ledger.py",
+      "pos": [700, 550],
+      "size": [180, 64],
+      "sources": [
+        {"path": "skills/dealer-ops-suite/scripts/make_todos.py", "line": 192, "end_line": 192, "label": "待办生成入口"},
+        {"path": "skills/dealer-ops-suite/scripts/writeback_ledger.py", "line": 320, "end_line": 377, "label": "回写凭证链"}
       ]
     },
     {
       "id": "policy",
       "type": "backend",
       "label": "政策表自检",
-      "sublabel": "check_policy.py",
-      "pos": [
-        680,
-        390
-      ],
-      "size": [
-        160,
-        64
-      ]
-    },
-    {
-      "id": "ledger",
-      "type": "backend",
-      "label": "台账待办",
-      "sublabel": "ledger_read.py",
-      "pos": [
-        680,
-        530
-      ],
-      "size": [
-        160,
-        64
-      ]
+      "sublabel": "check_policy.py · P1–P6",
+      "pos": [940, 430],
+      "size": [170, 64],
+      "sources": [{"path": "skills/dealer-ops-suite/scripts/check_policy.py", "line": 276, "end_line": 276, "label": "政策自检入口"}]
     },
     {
       "id": "refs",
       "type": "database",
-      "label": "references",
-      "sublabel": "12 份协议与口径",
-      "pos": [
-        920,
-        110
-      ],
-      "size": [
-        130,
-        60
+      "label": "references + assets",
+      "sublabel": "12 份口径 / 模板 / 文案",
+      "pos": [940, 70],
+      "size": [170, 60],
+      "sources": [
+        {"path": "skills/dealer-ops-suite/references/合同包审阅.md", "line": 1, "end_line": 1},
+        {"path": "skills/dealer-ops-suite/references/复核协议.md", "line": 98, "end_line": 98}
       ]
     },
     {
-      "id": "assets",
-      "type": "database",
-      "label": "assets",
-      "sublabel": "模板与对外文案",
-      "pos": [
-        680,
-        30
-      ],
-      "size": [
-        130,
-        60
+      "id": "review",
+      "type": "backend",
+      "label": "复核与交付",
+      "sublabel": "复核包 → R1–R10 → 复核锁",
+      "pos": [940, 310],
+      "size": [160, 64],
+      "sources": [
+        {"path": "skills/dealer-ops-suite/SKILL.md", "line": 235, "end_line": 259, "label": "复核交付回写"},
+        {"path": "skills/dealer-ops-suite/scripts/make_review_packet.py", "line": 1298, "end_line": 1298, "label": "复核包入口"}
       ]
     },
     {
       "id": "output",
       "type": "external",
       "label": "交付物",
-      "sublabel": "合同 / 对账工作簿",
-      "pos": [
-        1120,
-        300
-      ],
-      "size": [
-        120,
-        64
-      ]
+      "sublabel": "合同 / 对账单 / 回写台账",
+      "pos": [1110, 310],
+      "size": [110, 64]
     }
   ],
   "boundaries": [
     {
       "kind": "region",
       "label": "Agent 运行时",
-      "wraps": [
-        "agent",
-        "automation"
-      ],
+      "wraps": ["agent", "localtodo"],
       "pad": 18
     },
     {
       "kind": "region",
       "label": "dealer-ops-suite 插件包",
-      "wraps": [
-        "manifest",
-        "skillmd",
-        "contract",
-        "recon",
-        "policy",
-        "ledger",
-        "refs",
-        "assets"
-      ],
+      "wraps": ["manifest", "skillmd", "contract", "master", "recon", "ledger", "policy", "refs", "review"],
       "pad": 18
     }
   ],
   "connections": [
-    {
-      "id": "ask",
-      "from": "user",
-      "to": "agent",
-      "label": "提出需求",
-      "variant": "emphasis"
-    },
-    {
-      "id": "discover",
-      "from": "agent",
-      "to": "manifest",
-      "label": "发现插件"
-    },
-    {
-      "id": "declare",
-      "from": "manifest",
-      "to": "skillmd",
-      "label": "声明入口"
-    },
-    {
-      "id": "route-contract",
-      "from": "skillmd",
-      "to": "contract",
-      "label": "合同填写"
-    },
-    {
-      "id": "route-recon",
-      "from": "skillmd",
-      "to": "recon",
-      "label": "对账工作",
-      "variant": "emphasis"
-    },
-    {
-      "id": "route-policy",
-      "from": "skillmd",
-      "to": "policy",
-      "label": "政策自检"
-    },
-    {
-      "id": "route-ledger",
-      "from": "skillmd",
-      "to": "ledger",
-      "label": "台账待办"
-    },
-    {
-      "id": "refs-contract",
-      "from": "refs",
-      "to": "contract",
-      "label": "口径/协议",
-      "variant": "dashed"
-    },
-    {
-      "id": "assets-contract",
-      "from": "assets",
-      "to": "contract",
-      "label": "模板/文案",
-      "variant": "dashed"
-    },
-    {
-      "id": "contract-out",
-      "from": "contract",
-      "to": "output",
-      "label": "输出合同"
-    },
-    {
-      "id": "recon-out",
-      "from": "recon",
-      "to": "output",
-      "label": "输出对账单"
-    }
+    {"id": "ask", "from": "user", "to": "agent", "label": "提出需求", "variant": "emphasis"},
+    {"id": "discover", "from": "agent", "to": "manifest", "label": "发现插件"},
+    {"id": "declare", "from": "manifest", "to": "skillmd", "label": "声明入口"},
+    {"id": "auto", "from": "agent", "to": "localtodo", "label": "生成本地待办", "variant": "dashed"},
+    {"id": "route-contract", "from": "skillmd", "to": "contract", "label": "合同包审阅"},
+    {"id": "route-master", "from": "skillmd", "to": "master", "label": "主档确认链"},
+    {"id": "route-recon", "from": "skillmd", "to": "recon", "label": "对账双引擎", "variant": "emphasis"},
+    {"id": "route-policy", "from": "skillmd", "to": "policy", "label": "政策自检"},
+    {"id": "route-ledger", "from": "skillmd", "to": "ledger", "label": "台账与回写"},
+    {"id": "refs-contract", "from": "refs", "to": "contract", "label": "协议 / 模板", "variant": "dashed"},
+    {"id": "recon-review", "from": "recon", "to": "review", "label": "复核包 + R1–R10", "variant": "emphasis"},
+    {"id": "recon-writeback", "from": "recon", "to": "ledger", "label": "回写期间表", "variant": "dashed"},
+    {"id": "review-out", "from": "review", "to": "output", "label": "对账单 / 回写"},
+    {"id": "contract-out", "from": "contract", "to": "output", "label": "合同成品"}
   ],
   "cards": [
     {
       "dot": "cyan",
       "title": "范围",
       "items": [
-        "订单与发货不进入本 Skill，按业务约定停在合同后",
-        "对账阶段完整保留原对账工作流",
-        "不绑定特定 harness；任意 Agent 运行时均可加载"
+        "订单、发货、签收在业务系统完成，不在本 Skill 内",
+        "直接买断立即阻断，不套用两种引擎公式",
+        "不绑定特定 harness；入口统一为 Agent Harness"
       ]
     },
     {
-      "dot": "amber",
-      "title": "检查边界",
+      "dot": "rose",
+      "title": "不可绕过的门禁",
       "items": [
-        "政策表只做五类原则性自检：同条码多行、门槛冲突、条码缺失或非法、价格版本、生效断档与贴花标准",
-        "输出统一为「需确认项」，不直接判错",
-        "合同填写校验：日期 / 金额 / 比例 / 目标 / 返利 / 保证金 / 附件一致性",
-        "合同包审阅：主合同/附件/政策表交叉检查 + LLM 语义风险清单"
+        "合同写前 --approve-write、最终 --release、verify_fill 三段验收",
+        "主档 A3 确认：抽取结果只是候选，普通 JSON 不能直接落库",
+        "政策 blocker 不降级；blocker=0 且 high 逐条登记才可放行"
       ]
     },
     {
       "dot": "violet",
-      "title": "运行时说明",
+      "title": "统一口径与闭环",
       "items": [
-        "台账公式无缓存时，ledger_read.py 按 Excel 规则即时计算并标注",
-        "政策自检输出为会话需确认项，台账待办输出为会话消息",
-        "B5 台账回写由 writeback_ledger.py 执行（dry-run → --write）"
+        "铺货代销与月结买断分开计货款与贴花，共享列/条码/舍入内核",
+        "金额逐笔 ROUND_HALF_UP 到分，合计只汇总已舍入明细",
+        "B5 回写先 dry-run 再 --write；未回写期间表视为流程未完成"
       ]
     }
   ]

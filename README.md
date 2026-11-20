@@ -22,10 +22,10 @@ Dealer Ops Suite 把这些问题收进两条完整工作流：**填合同**与**
 | 合同填充与条款校验 | 识别经销 / 铺货代销合同及附件待填项，一次性收值、关键条款校验、编译计划、写入、验收 | `scan_blanks.py`、`build_plan.py`、`apply_fill.py`、`verify_fill.py` |
 | 合同包审阅 | 主合同 + 附件 + 价格政策交叉检查；输出阻断/高/中/低「需确认项」，支持合并 LLM 语义审阅 | `review_contract_package.py`、`references/合同包审阅.md` |
 | 客户主档 | 从合同抽取候选字段，生成确认页，人工逐项确认后写入客户主档 | `extract_contract.py`、`make_confirm_html.py`、`apply_contract.py` |
-| 月度对账 | 主档转配置，计算应结算、差异、贴花，生成对账工作簿 | `load_master.py`、`recon_engine.py` |
-| 复核与交付 | L1–L5 确定性校验 + L6 LLM 语义复核，复核锁绑定工作簿哈希 | `make_review_packet.py`、`apply_review.py`、`check_public_copy.py`、`export_pdf.py` |
-| 政策表自检 | 只做五类原则性检查：同条码多行（P1）、行内与表尾门槛冲突（P2）、条码缺失或非法（P3）、价格版本缺列／缺价／缺生效日／版本冲突（P4）、价格生效断档（P5）及贴花标准原则性错误（P6）。条码列带 `.0` 尾串的数字串（Excel 浮点伪格式）按条码归一化处理，不再误报 P3（2026-11-20 行为差异） | `check_policy.py` |
-| 台账待办 | 按台账公式计算当前应做、距截止、紧急度；公式无缓存时即时重算并标注 | `ledger_read.py` |
+| 月度对账 | 主档转配置，按铺货代销 / 月结买断两套口径计算应结算、差异、贴花，生成对账工作簿 | `load_master.py`、`recon_engine.py`、`monthly_recon_engine.py` |
+| 复核与交付 | R1–R10 LLM 语义复核（L6），复核包 + 复核锁绑定工作簿哈希 | `make_review_packet.py`、`apply_review.py`、`check_public_copy.py`、`export_pdf.py` |
+| 政策表自检 | 六类原则性检查：同条码多行（P1）、行内与表尾门槛冲突（P2）、条码缺失或非法（P3）、价格版本缺列／缺价／缺生效日／版本冲突（P4）、价格生效断档（P5）及贴花标准原则性错误（P6）。条码列带 `.0` 尾串的数字串（Excel 浮点伪格式）按条码归一化处理，不再误报 P3（2026-11-20 行为差异） | `check_policy.py` |
+| 台账待办 | `make_todos.py` 生成本地待办（不建定时任务）；`ledger_read.py` 按台账公式计算当前应做、距截止、紧急度，公式无缓存时即时重算并标注 | `make_todos.py`、`ledger_read.py` |
 | 台账回写 | 对账交付后把期初 / 结算 / 差异 / 贴花 / 状态写回主档「期间」表；dry-run、自动备份、同期间幂等 | `writeback_ledger.py` |
 
 ### 合同关键条款校验（填写阶段）
@@ -47,7 +47,7 @@ Dealer Ops Suite 把这些问题收进两条完整工作流：**填合同**与**
 ## 两张图
 
 - [架构图](https://kentqi.github.io/dealer-ops-suite/architecture.html)：入口、插件清单、SKILL.md 路由、四类能力、支撑资源与交付物。
-- [业务流程图](https://kentqi.github.io/dealer-ops-suite/business-workflow.html)：谈客户 → 定政策 → 合同与资料 → 签署 → 订单发货（Skill 外）→ 客户销售 → 建台账 → 生成待办 → 对账。
+- [业务流程图](https://kentqi.github.io/dealer-ops-suite/business-workflow.html)：谈客户 → 定政策 → 合同包三件套审阅 → 签署 → 订单发货（Skill 外）→ 客户销售 → 建台账 → 生成待办 → 对账双引擎 → R1–R10 复核 → 回写台账。
 - [项目首页](https://kentqi.github.io/dealer-ops-suite/)：两张图的入口。
 
 也可以下载 `docs/architecture.html` 与 `docs/business-workflow.html`，用浏览器离线打开。
@@ -73,22 +73,27 @@ Dealer Ops Suite 把这些问题收进两条完整工作流：**填合同**与**
         ├── assets/
         │   ├── 客户主档-模板.xlsx
         │   └── copy/对外文案.json
+        ├── archive/
+        │   └── SKILL-被替换版-main.md
         ├── references/
         │   ├── 客户主档设计.md
-        │   ├── field-map.md
+        │   ├── 合同包审阅.md
+        │   ├── 合同编辑.md
+        │   ├── 结算规则.md
         │   ├── 复核协议.md
         │   ├── 口径确认协议.md
         │   ├── 故障与回滚.md
         │   ├── 对外文案治理.md
         │   ├── 数据映射与结构探查.md
         │   ├── confirm-template.md
+        │   ├── field-map.md
         │   └── validation-rules.md
         └── scripts/
             ├── spec/
             │   ├── jx.json
             │   ├── dx.json
             │   └── fc.json
-            └── 27 个 Python 脚本
+            └── 33 个 Python 脚本
 ```
 
 ## 快速开始
@@ -176,7 +181,7 @@ python3 skills/dealer-ops-suite/scripts/scan_blanks.py \
 - 订单与发货不在本 Skill 范围内，业务图里只作为交接节点。
 - 合同填充依赖你提供的 `.docx` 模板；模板改版后必须同步 `spec/*.json`。
 - 对账依赖甲方挂账、库存、销售流水三份结构化导出；扫描件不做 OCR 兜底。
-- 政策表自检只覆盖三类原则性问题，不做跨客户比价、毛利测算或折扣建模。
+- 政策表自检只覆盖 P1–P6 六类原则性问题，不做跨客户比价、毛利测算或折扣建模。
 - L6 语义复核需要 Agent 具备文件读写与推理能力；脚本本身不调用模型。
 
 ## License

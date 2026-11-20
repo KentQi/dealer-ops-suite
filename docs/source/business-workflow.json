@@ -5,94 +5,34 @@
     "title": "经销商业务全流程",
     "locale": "zh-CN",
     "output": "dealer-ops-suite-business-workflow.html",
-    "quality_profile": "showcase"
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/KentQi/dealer-ops-suite.git",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "dd63ec1a6c9b8753d85210d5b7e1bdcc079633e0"
+    }
   },
   "lanes": [
-    {
-      "id": "biz",
-      "label": "商务谈判"
-    },
-    {
-      "id": "customer",
-      "label": "客户"
-    },
-    {
-      "id": "contract",
-      "label": "合同与填报"
-    },
-    {
-      "id": "handoff",
-      "label": "订单与发货（Skill 外）",
-      "variant": "exception"
-    },
-    {
-      "id": "ledger",
-      "label": "台账与自动化"
-    },
-    {
-      "id": "recon",
-      "label": "财务对账"
-    }
+    { "id": "biz", "label": "商务谈判（Skill 外）" },
+    { "id": "customer", "label": "客户" },
+    { "id": "contract", "label": "合同包与审阅" },
+    { "id": "handoff", "label": "订单发货签收（Skill 外）", "variant": "exception" },
+    { "id": "ledger", "label": "台账与待办" },
+    { "id": "recon", "label": "对账 / 复核 / 回写" }
   ],
   "phases": [
-    {
-      "id": "negotiate",
-      "label": "商务前置",
-      "fromCol": 0,
-      "toCol": 1
-    },
-    {
-      "id": "agreement",
-      "label": "合同与资料",
-      "fromCol": 2,
-      "toCol": 3,
-      "variant": "emphasis"
-    },
-    {
-      "id": "fulfill",
-      "label": "履约与客户管理",
-      "fromCol": 4,
-      "toCol": 5,
-      "variant": "dashed"
-    }
+    { "id": "negotiate", "label": "商务前置", "fromCol": 0, "toCol": 1 },
+    { "id": "agreement", "label": "合同包与审阅", "fromCol": 2, "toCol": 3, "variant": "emphasis" },
+    { "id": "fulfill", "label": "履约与对账闭环", "fromCol": 4, "toCol": 5, "variant": "dashed" }
   ],
   "groups": [
-    {
-      "id": "contract_pack",
-      "label": "合同包",
-      "lane": "contract",
-      "fromCol": 2,
-      "toCol": 3,
-      "variant": "emphasis"
-    },
-    {
-      "id": "outside_skill",
-      "label": "Skill 外交接",
-      "lane": "handoff",
-      "fromCol": 4,
-      "toCol": 4,
-      "variant": "dashed"
-    },
-    {
-      "id": "ledger_driven",
-      "label": "台账驱动",
-      "lane": "ledger",
-      "fromCol": 5,
-      "toCol": 5,
-      "variant": "emphasis"
-    }
+    { "id": "contract_pack", "label": "合同包三件套", "lane": "contract", "fromCol": 2, "toCol": 3, "variant": "emphasis" },
+    { "id": "outside_skill", "label": "Skill 外交接", "lane": "handoff", "fromCol": 4, "toCol": 4, "variant": "dashed" },
+    { "id": "ledger_driven", "label": "台账驱动", "lane": "ledger", "fromCol": 5, "toCol": 5, "variant": "emphasis" },
+    { "id": "recon_close", "label": "对账闭环", "lane": "recon", "fromCol": 5, "toCol": 5, "variant": "emphasis" }
   ],
-  "mainPath": [
-    "talk",
-    "policy",
-    "contract",
-    "sign",
-    "ship",
-    "sell",
-    "ledger",
-    "todo",
-    "recon"
-  ],
+  "mainPath": ["talk", "policy", "contract", "review", "sign", "ship", "sell", "ledger", "todo", "recon", "check", "writeback"],
   "nodes": [
     {
       "id": "talk",
@@ -108,15 +48,8 @@
       "col": 1,
       "type": "backend",
       "label": "定政策",
-      "sublabel": "具体政策条款"
-    },
-    {
-      "id": "contract",
-      "lane": "contract",
-      "col": 2,
-      "type": "backend",
-      "label": "走合同",
-      "sublabel": "主合同/补充协议/政策文件 + 审阅"
+      "sublabel": "出货/结算/指标/约束",
+      "sources": [{"path": "skills/dealer-ops-suite/SKILL.md", "line": 16, "end_line": 18, "label": "政策来源"}]
     },
     {
       "id": "info",
@@ -124,7 +57,27 @@
       "col": 2,
       "type": "external",
       "label": "提供资料",
-      "sublabel": "主体/开票/对账人/收件"
+      "sublabel": "主体/开票/对账人"
+    },
+    {
+      "id": "contract",
+      "lane": "contract",
+      "col": 2,
+      "type": "backend",
+      "label": "合同包三件套",
+      "sublabel": "主合同/防窜货附件/价格政策",
+      "sources": [{"path": "skills/dealer-ops-suite/SKILL.md", "line": 60, "end_line": 66, "label": "合同包构成"}]
+    },
+    {
+      "id": "review",
+      "lane": "contract",
+      "col": 3,
+      "type": "security",
+      "label": "合同包审阅",
+      "sublabel": "确定性 + LLM 语义风险",
+      "tag": "双门禁",
+      "yOffset": -52,
+      "sources": [{"path": "skills/dealer-ops-suite/SKILL.md", "line": 68, "end_line": 105, "label": "审阅与门禁"}]
     },
     {
       "id": "sign",
@@ -132,7 +85,8 @@
       "col": 3,
       "type": "security",
       "label": "签署生效",
-      "sublabel": "合同与附件定稿"
+      "sublabel": "三文件放行凭证",
+      "yOffset": 60
     },
     {
       "id": "ship",
@@ -140,7 +94,7 @@
       "col": 4,
       "type": "messagebus",
       "label": "订单与发货",
-      "sublabel": "不在本 Skill 范围内",
+      "sublabel": "签收在业务系统完成",
       "tag": "Skill 外"
     },
     {
@@ -157,7 +111,8 @@
       "col": 5,
       "type": "database",
       "label": "建台账",
-      "sublabel": "记录签约时收集的信息"
+      "sublabel": "A1–A5 人工确认主档",
+      "sources": [{"path": "skills/dealer-ops-suite/SKILL.md", "line": 125, "end_line": 155, "label": "主档确认链"}]
     },
     {
       "id": "todo",
@@ -165,128 +120,81 @@
       "col": 5,
       "type": "messagebus",
       "label": "生成待办",
-      "sublabel": "由 make_todos.py 生成本地待办",
-      "yOffset": 96
+      "sublabel": "make_todos.py 写本地 _待办.json",
+      "yOffset": 96,
+      "sources": [{"path": "skills/dealer-ops-suite/SKILL.md", "line": 161, "end_line": 170, "label": "本地待办"}]
     },
     {
       "id": "recon",
       "lane": "recon",
       "col": 5,
       "type": "backend",
-      "label": "对账工作",
-      "sublabel": "用户查看 _待办.json 后执行",
-      "tag": "B 段全流程"
+      "label": "对账双引擎",
+      "sublabel": "铺货代销 / 月结买断",
+      "sources": [{"path": "skills/dealer-ops-suite/SKILL.md", "line": 172, "end_line": 233, "label": "两种对账模式"}]
+    },
+    {
+      "id": "check",
+      "lane": "recon",
+      "col": 5,
+      "type": "security",
+      "label": "R1–R10 复核",
+      "sublabel": "复核包 + 复核锁",
+      "yOffset": 100,
+      "sources": [{"path": "skills/dealer-ops-suite/references/复核协议.md", "line": 98, "end_line": 98, "label": "复核清单"}]
+    },
+    {
+      "id": "writeback",
+      "lane": "recon",
+      "col": 5,
+      "type": "messagebus",
+      "label": "B5 回写台账",
+      "sublabel": "写入主档「期间」表",
+      "yOffset": 196,
+      "sources": [{"path": "skills/dealer-ops-suite/scripts/writeback_ledger.py", "line": 320, "end_line": 377, "label": "回写凭证链"}]
     }
   ],
   "edges": [
-    {
-      "id": "talk-policy",
-      "from": "talk",
-      "to": "policy",
-      "label": "谈定",
-      "variant": "emphasis",
-      "role": "main"
-    },
-    {
-      "id": "policy-contract",
-      "from": "policy",
-      "to": "contract",
-      "label": "定条款",
-      "variant": "emphasis",
-      "role": "main"
-    },
-    {
-      "id": "info-contract",
-      "from": "info",
-      "to": "contract",
-      "label": "资料入主合同",
-      "variant": "dashed",
-      "role": "branch"
-    },
-    {
-      "id": "contract-sign",
-      "from": "contract",
-      "to": "sign",
-      "label": "走合同",
-      "variant": "emphasis",
-      "role": "main"
-    },
-    {
-      "id": "sign-ship",
-      "from": "sign",
-      "to": "ship",
-      "label": "签署后",
-      "variant": "default",
-      "role": "main"
-    },
-    {
-      "id": "ship-sell",
-      "from": "ship",
-      "to": "sell",
-      "label": "发货",
-      "variant": "default",
-      "role": "main"
-    },
-    {
-      "id": "sell-ledger",
-      "from": "sell",
-      "to": "ledger",
-      "label": "进入客户管理",
-      "variant": "emphasis",
-      "role": "main"
-    },
-    {
-      "id": "ledger-todo",
-      "from": "ledger",
-      "to": "todo",
-      "label": "台账引用",
-      "variant": "emphasis",
-      "role": "main"
-    },
-    {
-      "id": "todo-recon",
-      "from": "todo",
-      "to": "recon",
-      "label": "进入待办",
-      "variant": "emphasis",
-      "role": "main"
-    },
-    {
-      "id": "recon-ledger-writeback",
-      "from": "recon",
-      "to": "ledger",
-      "label": "回写期间表",
-      "variant": "emphasis",
-      "role": "return",
-      "fromSide": "right",
-      "toSide": "right",
-      "labelSegment": 1
-    }
+    { "id": "talk-policy", "from": "talk", "to": "policy", "label": "谈定政策", "variant": "emphasis", "role": "main" },
+    { "id": "policy-contract", "from": "policy", "to": "contract", "label": "写入合同包", "variant": "emphasis", "role": "main" },
+    { "id": "info-contract", "from": "info", "to": "contract", "label": "资料入主合同", "variant": "dashed", "role": "branch" },
+    { "id": "contract-review", "from": "contract", "to": "review", "label": "交叉审阅", "variant": "security", "role": "main" },
+    { "id": "review-sign", "from": "review", "to": "sign", "label": "门禁通过", "variant": "emphasis", "role": "main" },
+    { "id": "sign-ship", "from": "sign", "to": "ship", "label": "签署后", "variant": "default", "role": "main" },
+    { "id": "ship-sell", "from": "ship", "to": "sell", "label": "发货签收", "variant": "default", "role": "main" },
+    { "id": "sell-ledger", "from": "sell", "to": "ledger", "label": "进入客户管理", "variant": "emphasis", "role": "main" },
+    { "id": "ledger-todo", "from": "ledger", "to": "todo", "label": "台账引用", "variant": "emphasis", "role": "main" },
+    { "id": "todo-recon", "from": "todo", "to": "recon", "label": "按待办执行", "variant": "emphasis", "role": "main" },
+    { "id": "recon-check", "from": "recon", "to": "check", "label": "生成复核包", "variant": "emphasis", "role": "main" },
+    { "id": "check-writeback", "from": "check", "to": "writeback", "label": "复核通过", "variant": "emphasis", "role": "main" },
+    { "id": "recon-ledger-writeback", "from": "writeback", "to": "ledger", "label": "回写期间表", "variant": "emphasis", "role": "return", "toSide": "right", "labelSegment": 1 }
   ],
   "cards": [
     {
       "dot": "cyan",
-      "title": "范围边界",
+      "title": "Skill 边界",
       "items": [
-        "订单与发货不进入 Skill，图中只作为交接节点",
-        "客户收货并开始销售后，才进入客户管理与对账"
+        "商务谈判、订单、发货、签收在 Skill 外完成",
+        "Skill 从合同包审阅开始，到对账回写台账结束",
+        "合同包 = 主合同 + 防窜货附件 + 价格/出货政策"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "签署前门禁",
+      "items": [
+        "合同包审阅：确定性检查 + LLM 语义风险清单",
+        "blocker=0、high 逐条确认，才可生成放行凭证",
+        "LLM 只提示风险，不替用户改合同或出法律意见"
       ]
     },
     {
       "dot": "amber",
-      "title": "待办与对账",
+      "title": "台账驱动对账",
       "items": [
-        "查看 _待办.json 后按需调用 dealer-ops-suite 对账流程",
-        "原对账工作流完整保留",
-        "对账完成后 B5 回写主档「期间」表"
-      ]
-    },
-    {
-      "dot": "violet",
-      "title": "待办边界",
-      "items": [
-        "不创建定时任务或自动推送",
-        "待办只写入本地 _待办.json，由用户查看并执行"
+        "台账用合同关键字段建立，并生成本地待办提醒",
+        "待办只写 _待办.json，不创建定时任务或自动推送",
+        "对账结果经 R1–R10 复核后，回写主档「期间」表"
       ]
     }
   ]
