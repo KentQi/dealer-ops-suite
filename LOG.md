@@ -1,5 +1,10 @@
 # 会话日志(最新在上)
 
+## 2026-11-21 01:33 | model=zcode-glm-5.3-flash | task=T008 完成
+- 摘要: T008 完成：锁定表静默 no-op 改显式披露（97251c9）。verify_fill 在 locked_content 为空时输出「未登记（本次未校验；接真实附件一时按 SANITIZATION.md 登记）」替代静默「完整」；validation-rules.md 两处/field-map.md/合同编辑.md/scan_blanks docstring 收口为如实表述（登记即逐格比对、公开版未登记）；裁决落 DECISIONS（维持脱敏、否决补数据、否决维持假绿）。顺带完成 L6 术语彻底退役：README 能力表与边界、口径确认协议两处、复核协议标题与正文、对外文案治理 §7 标题与正文，活文档 L6 命中清零（archive 历史件不动）。pytest 155 passed。
+- 事实(v2): mode=single | 文件 0 | ± +0/-0 | base=- | sha=- | branch=main || 验收: 未要求 | verify: PASS 12·WARN 0·ERROR 0 | 耗时: 0s
+- 留给下一个: T009 迁移源在 /tmp/orig-skills/KentQi-skinlane-contract-filler-*/tests/；SCRIPTS 路径改 ROOT/skills/dealer-ops-suite/scripts；tests/ 现役路径写法见 test_contract_fill_gates.py:13-14
+
 ## 2026-11-21 01:30 | model=zcode-glm-5.3-flash | task=T007 完成
 - 摘要: T007 完成：恢复合并时丢弃的依赖声明（4c75605）。根目录 requirements.txt 重建（两原仓并集：保留仍正确的 openpyxl<4、删除已过时的 Pillow<12、python-docx 下限抬 1.2.0，注明 CI/开发环境定位）；SKILL.md frontmatter compatibility 补 python-docx/lxml 硬依赖（frontmatter 才是 skill 克隆的真契约）；README 依赖节同步。绿闸 R2 拦截 requirements.txt/.zcode 顶层越界 → 白名单修宪（aba2d6e）+ .zcode 入 ignore。验证：pip --dry-run 解析通过、pytest 155 passed、unittest discover 155 OK 双运行器互不回归。
 - 事实(v2): mode=single | 文件 0 | ± +0/-0 | base=- | sha=- | branch=main || 验收: 未要求 | verify: PASS 12·WARN 0·ERROR 0 | 耗时: 0s

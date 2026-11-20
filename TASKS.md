@@ -18,11 +18,9 @@ executionRoot 是独立检出(node_modules 等依赖需单独安装)。任务分
 (空——认领后由 relay_claim 移入;认领锁在 .relay/claims/,TTL 4 小时,崩溃会话的认领到期自动可接管)
 
 ## 待办
-- [ ] T012 锁定表显式披露、文档收口与L6术语退役
-  验收: verify_fill 在 locked_content 为空时输出「未登记」披露；validation-rules/field-map/合同编辑 三处宣称收口；完成 L6 术语彻底退役（README 2 处 + 口径确认协议 2 处 + 复核协议 2 处 + 对外文案治理 2 处）；pytest 全绿
-  备注: T008 还应顺带处理：复核协议.md 标题、对外文案治理.md §7 标题的 L6 措辞；deps 恢复已过（4c75605 + aba2d6e）
-- [ ] T008 锁定表静默no-op显式披露与文档收口（恢复批次2）
-  验收: verify_fill 在 locked_content 为空时输出「未登记」披露文案；validation-rules/field-map/合同编辑 三处宣称收口；pytest 全绿
+- [ ] T012 迁移对抗测试层与六类回归钉子
+  验收: fill_sim/fixtures/test_attacks/test_workflow 迁入（真实放行凭证夹具 contract_release.build_release、品牌scrub含肌侣/公司全称）；test_public_copy_gate/test_v17_gates/test_deterministic_rerun/铺货侧映射测试新增；pytest 与 unittest 双运行器全绿
+  备注: T009 迁移源在 /tmp/orig-skills/KentQi-skinlane-contract-filler-*/tests/；SCRIPTS 路径改 ROOT/skills/dealer-ops-suite/scripts；tests/ 现役路径写法见 test_contract_fill_gates.py:13-14
 - [ ] T009 迁移对抗测试层与六类回归钉子（恢复批次3）
   验收: fill_sim/fixtures/test_attacks/test_workflow 迁入（真实放行凭证夹具、品牌scrub）；test_public_copy_gate/test_v17_gates/test_deterministic_rerun/铺货侧映射测试新增；pytest 全绿且存量 unittest 不回归
 - [ ] T010 最小CI建立（恢复批次4）
@@ -34,6 +32,8 @@ executionRoot 是独立检出(node_modules 等依赖需单独安装)。任务分
   备注: 全仓库实质遗留已清零（审计 41 项、结构性收敛 6 条、复核 F/D/C/E、文档漂移、koujing_sha256 全部闭环）；后续工作由用户指定
 
 ## 已完成
+- [x] T008 锁定表静默no-op显式披露、文档收口与L6术语退役（恢复批次2）  (2026-11-21)
+  验收: verify_fill 在 locked_content 为空时输出「未登记」披露文案；validation-rules/field-map/合同编辑 三处宣称收口；L6 术语退役（README 2 处 + 口径确认协议 2 处 + 复核协议 2 处 + 对外文案治理 2 处）；pytest 全绿
 - [x] T007 恢复依赖声明与requirements（恢复批次1）  (2026-11-21)
   验收: SKILL.md frontmatter 与 README 依赖声明含 python-docx/lxml；根目录 requirements.txt 存在且 pip install -r 可解；pytest tests -q 全绿
 - [x] T005 实现 koujing_sha256 复核链路绑定  (2026-11-21)
