@@ -649,8 +649,10 @@ _PART = {}
 
 try:
     from schema_common import normalize_barcode as _norm_bar
+    from schema_common import locate_column as _locate_column
+    from schema_common import ColumnAmbiguous as _ColumnAmbiguous
 except Exception as _norm_import_error:  # noqa: BLE001 - 依赖缺失时中文中止
-    raise SystemExit("[中止] 条码归一化需要 schema_common.py（%s）；请确认脚本目录完整"
+    raise SystemExit("[中止] 条码归一化／列定位需要 schema_common.py（%s）；请确认脚本目录完整"
                      % _norm_import_error)
 
 
@@ -1116,10 +1118,12 @@ try:
             _ws = _wb[_sku_sheet]
             _h = [c.value for c in _ws[1]]
             def _cc(k, d=None):
-                for i, x in enumerate(_h):
-                    if x and k in str(x):
-                        return i
-                return d
+                # 列定位统一走共享实现：精确优先、多列命中阻断（旧版子串先到先得已废除）。
+                try:
+                    hit = _locate_column(_h, (k,), sheet_name="主档·SKU", required=False)
+                except _ColumnAmbiguous as exc:
+                    _bail(f"主档「SKU」表「{k}」命中多列，无法唯一取数：{exc}")
+                return d if hit is None else hit
             ci_bar = _cc("条码", 0); ci_name = _cc("标准品名", 1)
             ci_alias = _cc("别名", 2); ci_attr = _cc("结算属性", 6)
             ci_spec = _cc("规格", 3); ci_unit = _cc("单位", 4)

@@ -13,20 +13,29 @@
 能力 → 唯一权威实现：
 
 ===========  ===========================================================
-文件 SHA-256  schema_common.sha256_file
+流式文件哈希  schema_common.sha256_file
 条码归一化    schema_common.normalize_barcode（".0" 剥尾惯用法不得外流）
 列定位        schema_common.locate_column / map_field_columns、
              settlement_rules.rate_value_column
-金额舍入      settlement_rules.money（Decimal.quantize 不得越出
-             settlement_rules）
+金额舍入      settlement_rules.money（Decimal.quantize 与
+             round(Decimal(...), n) 不得越出 settlement_rules）
 ===========  ===========================================================
 
 违例签名（文件哈希能力）＝ SHA 计算 + 流式喂食惯用法（iter-lambda /
 循环内 digest.update）或 hashlib.file_digest——即「重新实现流式文件哈希
-算法」。对已经在内存中的字节串做一次 ``hashlib.sha256(raw)`` 属原语调用
-（附件摘要、values_digest、findings_digest、待办 id 哈希、docx 逐部件
-指纹），不是重复实现，不命中。exec/getattr 级动态规避不在 AST 防御范围，
-靠 code review 兜底。
+算法」。对已经在内存中的字节串做一次 ``hashlib.sha256(raw)``、以及一次性
+整读 ``hashlib.sha256(open(p, "rb").read())`` 属单行原语调用（附件摘要、
+values_digest、findings_digest、待办 id 哈希、docx 逐部件指纹），不是
+算法复制，不命中——表头的「流式」限定即此意。
+
+召回边界（签名式扫描的固有代价，靠 code review 兜底）：
+1. 金额舍入拦 ``Decimal.quantize`` 与 ``round(Decimal(...), n)``（半偶
+   口径复现通道）；float 形态 ``round(x, 2)`` 与合法数量舍入在 AST 层
+   不可区分，不拦；
+2. 列定位拦「enumerate/range(len) 循环 + 以循环目标做 in 比较」与
+   「alias/header 参数名 + 别名循环」两种形态；完全改名且换形态的
+   语义等价重写不拦；
+3. exec/getattr 级动态规避一律不拦。
 """
 import ast
 import os
@@ -133,12 +142,110 @@ def _has_streaming_feed(nodes):
     return False
 
 
+def _decimal_aliases(tree):
+    names, mods = set(), set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "decimal":
+                    mods.add(alias.asname or "decimal")
+        elif isinstance(node, ast.ImportFrom) and node.module == "decimal":
+            for alias in node.names:
+                if alias.name == "Decimal":
+                    names.add(alias.asname or "Decimal")
+    return names, mods
+
+
+def _is_decimal_round(call, dec_names, dec_mods):
+    """round(Decimal(...), n)：Decimal 上的内建 round 是 HALF_EVEN，
+    恰好是金额舍入唯一权威（money 的 HALF_UP）要消除的口径分叉形态。"""
+    if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id == "round"):
+        return False
+    if len(call.args) != 2 or not isinstance(call.args[1], ast.Constant):
+        return False
+    for node in _subtree(call.args[0]):
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Name) and func.id in dec_names:
+                return True
+            if isinstance(func, ast.Attribute) and func.attr == "Decimal" \
+                    and isinstance(func.value, ast.Name) and func.value.id in dec_mods:
+                return True
+    return False
+
+
+def _for_target_names(node):
+    target = node.target
+    if isinstance(target, ast.Name):
+        return {target.id}
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return {elt.id for elt in target.elts if isinstance(elt, ast.Name)}
+    return set()
+
+
+def _is_enumerate_or_range_len(iter_node):
+    if not (isinstance(iter_node, ast.Call) and isinstance(iter_node.func, ast.Name)):
+        return False
+    if iter_node.func.id == "enumerate":
+        return True
+    if iter_node.func.id == "range" and len(iter_node.args) == 1:
+        inner = iter_node.args[0]
+        return isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name) \
+            and inner.func.id == "len"
+    return False
+
+
+def _has_column_loop_signature(nodes, params=()):
+    """与参数名无关的取列循环特征：for i, h in enumerate(hdrs)（或
+    range(len(hdrs))）循环内以**检索词**做 in 匹配并返回该索引——列定位的
+    本质形态。检索词可以是本层循环目标、外层别名循环的目标，或函数参数
+    （``def _cc(k, d=None)`` / ``def pick_col(hdrs, wanted)``）。两个方向性
+    约束保证不误伤：
+    1. in 的**左侧**（检索词）必须是检索词集合的一员——「合计」行豁免这类
+       聚合扫描的检索词是常量（``'合计' in line``），不命中；
+    2. 循环内必须有 Return（索引名或下标取值）——普通过滤/统计循环没有
+       这个形状。"""
+    for node in nodes:
+        if not (isinstance(node, ast.For) and _is_enumerate_or_range_len(node.iter)):
+            continue
+        targets = set(_for_target_names(node)) | set(params)
+        for outer in nodes:
+            if outer is not node and isinstance(outer, ast.For) and node in _subtree(outer):
+                targets |= _for_target_names(outer)
+        if not targets:
+            continue
+        for child in _subtree(node):
+            if isinstance(child, ast.Compare) and any(isinstance(op, ast.In) for op in child.ops):
+                left = child.left
+                if not (isinstance(left, ast.Name) and left.id in targets):
+                    continue
+                for ret in _subtree(node):
+                    if isinstance(ret, ast.Return) and isinstance(ret.value, (ast.Name, ast.Subscript)):
+                        return True
+    return False
+
+
+def _has_alias_param_loop(params, own):
+    """别名/表头参数名的取列循环（第一代签名，保留作纵深防御）。"""
+    alias_params = {p for p in params if "alias" in p.lower() or p == "names"}
+    header_params = {p for p in params if "header" in p.lower()}
+    if not (alias_params and header_params):
+        return False
+    for node in own:
+        if isinstance(node, ast.For) and isinstance(node.iter, ast.Name) and node.iter.id in alias_params \
+                and any(isinstance(c, ast.Compare) and any(isinstance(op, ast.In) for op in c.ops)
+                        for c in _subtree(node)):
+            return True
+    return False
+
+
 def _scan(directory=_SCRIPTS):
     """返回 [(文件, 行号, 能力, 说明), ...]；空列表即通过。"""
     findings = []
     for name in sorted(n for n in os.listdir(directory) if n.endswith(".py")):
         tree = ast.parse(_read(name, directory), filename=name)
         hashlib_names, sha_direct = _hashlib_aliases(tree)
+        dec_names, dec_mods = _decimal_aliases(tree)
         for scope_name, params, node in _scopes(tree):
             own = list(_own_nodes(node))
             if name not in _SHA_WHITELIST:
@@ -159,19 +266,17 @@ def _scan(directory=_SCRIPTS):
                                          "schema_common.normalize_barcode"))
                         break
             if name not in _COLUMN_WHITELIST and scope_name != "<module>":
-                alias_params = {p for p in params if "alias" in p.lower() or p == "names"}
-                header_params = {p for p in params if "header" in p.lower()}
-                if alias_params and header_params:
-                    for n in own:
-                        if isinstance(n, ast.For) and isinstance(n.iter, ast.Name) \
-                                and n.iter.id in alias_params \
-                                and any(isinstance(c, ast.Compare)
-                                        and any(isinstance(op, ast.In) for op in c.ops)
-                                        for c in _subtree(n)):
-                            findings.append((name, n.lineno, "column",
-                                             "函数 %s 对别名参数做表头 in 匹配；列定位唯一实现在 "
-                                             "schema_common.locate_column / map_field_columns" % scope_name))
-                            break
+                column_hit = None
+                if _has_column_loop_signature(own, params):
+                    column_hit = (name, node.lineno, "column",
+                                  "函数 %s 存在 enumerate/range(len) 循环内以循环目标做 in 匹配的取列形态；"
+                                  "列定位唯一实现在 schema_common.locate_column / map_field_columns" % scope_name)
+                elif _has_alias_param_loop(params, own):
+                    column_hit = (name, node.lineno, "column",
+                                  "函数 %s 对别名参数做表头 in 匹配；列定位唯一实现在 "
+                                  "schema_common.locate_column / map_field_columns" % scope_name)
+                if column_hit:
+                    findings.append(column_hit)
             if name not in _MONEY_WHITELIST:
                 for n in own:
                     if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) \
@@ -179,6 +284,12 @@ def _scan(directory=_SCRIPTS):
                         findings.append((name, n.lineno, "money",
                                          "Decimal.quantize 出现在 settlement_rules 之外；"
                                          "金额舍入唯一实现在 settlement_rules.money"))
+                        break
+                for n in own:
+                    if isinstance(n, ast.Call) and _is_decimal_round(n, dec_names, dec_mods):
+                        findings.append((name, n.lineno, "money",
+                                         "round(Decimal(...), n) 是 HALF_EVEN，复现金额口径分叉；"
+                                         "金额舍入唯一实现在 settlement_rules.money（HALF_UP）"))
                         break
     return findings
 
@@ -243,6 +354,61 @@ class GateSelfTest(unittest.TestCase):
         )
         findings = self._scan_planted({"cash.py": source})
         self.assertTrue(any(kind == "money" for _, _, kind, _ in findings), findings)
+
+    def test_planted_decimal_round_is_caught(self):
+        # 复核 D：round(Decimal(...), 2) 是 HALF_EVEN，复现 #4 要消除的口径分叉。
+        source = (
+            "from decimal import Decimal\n"
+            "def money_like(value):\n"
+            "    return round(Decimal(str(value)), 2)\n"
+        )
+        findings = self._scan_planted({"m2.py": source})
+        self.assertTrue(any(kind == "money" for _, _, kind, _ in findings), findings)
+
+    def test_planted_param_free_column_loop_is_caught(self):
+        # 复核 C：完全改名（hdrs/keys）的取列循环，enumerate 形态。
+        source = (
+            "def locate(hdrs, keys):\n"
+            "    for k in keys:\n"
+            "        for i, h in enumerate(hdrs):\n"
+            "            if k in h:\n"
+            "                return i\n"
+        )
+        findings = self._scan_planted({"c2.py": source})
+        self.assertTrue(any(kind == "column" for _, _, kind, _ in findings), findings)
+
+    def test_planted_range_len_column_loop_is_caught(self):
+        # 复核 C 变体：range(len(...)) 索引形态。
+        source = (
+            "def pick_col(hdrs, wanted):\n"
+            "    for i in range(len(hdrs)):\n"
+            "        if wanted in hdrs[i]:\n"
+            "            return i\n"
+        )
+        findings = self._scan_planted({"c3.py": source})
+        self.assertTrue(any(kind == "column" for _, _, kind, _ in findings), findings)
+
+    def test_one_shot_whole_read_hash_is_declared_legal(self):
+        # 复核 E：一次性整读是已声明不拦的取舍（单行原语，无算法复制）。
+        source = (
+            "import hashlib\n"
+            "def h(path):\n"
+            "    return hashlib.sha256(open(path, 'rb').read()).hexdigest()\n"
+        )
+        self.assertEqual(self._scan_planted({"ok3.py": source}), [])
+
+    def test_aggregate_row_scan_is_not_flagged_as_column(self):
+        # 「合计」行豁免扫描（in 左侧是常量、比较对象不是循环目标）不得误伤。
+        source = (
+            "def skip_totals(lines):\n"
+            "    kept = []\n"
+            "    for i, line in enumerate(lines):\n"
+            "        if '合计' in line:\n"
+            "            continue\n"
+            "        kept.append(line)\n"
+            "    return kept\n"
+        )
+        self.assertEqual(self._scan_planted({"ok4.py": source}), [])
 
     def test_json_digest_without_file_open_is_not_flagged(self):
         # findings_digest / values_digest 类 JSON 摘要是合法语义，不得误伤。
