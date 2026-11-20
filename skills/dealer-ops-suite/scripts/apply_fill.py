@@ -213,9 +213,22 @@ def main():
                     help="受保护路径（原始模板）：必需；目标正是它则拒绝写入")
     ap.add_argument("--spec", help="字段规格 JSON（全量计划写入前复核用，必给）")
     ap.add_argument("--values", help="用户确认值 JSON（全量计划写入前复核用，必给）")
+    ap.add_argument("--review", required=True,
+                    help="review_contract_package.py --approve-write 生成的写前审阅 JSON")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--no-save", action="store_true")
     args = ap.parse_args()
+
+    from contract_release import check_write_review
+    try:
+        with open(args.review, encoding="utf-8") as fh:
+            review = json.load(fh)
+    except (OSError, ValueError) as exc:
+        sys.exit(f"无法读取写前审阅记录：{exc}")
+    review_problems = check_write_review(review, {"spec": args.spec, "values": args.values})
+    if review_problems:
+        sys.exit("写前审阅门禁未通过，未写入任何内容：" + "；".join(review_problems))
+    print("写前审阅门禁通过：LLM 已合并、无阻断项，高风险处理记录完整。")
 
     if args.plan.endswith(".rejected"):
         sys.exit("这是 build_plan 校验失败时留存的排查文件（.rejected），不是可执行计划，已拒绝")

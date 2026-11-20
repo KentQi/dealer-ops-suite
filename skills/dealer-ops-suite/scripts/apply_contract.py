@@ -23,8 +23,10 @@ _NUM_COLS = {"供货价", "零售价", "贴花标准", "贴花金额", "期初�
 _DATE_COLS = {"起始", "终止", "生效起", "生效止", "数据基准日"}
 _ENUM_COLS = {"结算属性": ("结算类", "非结算类"),
               "状态": ("待确认", "已确认", "已对账", "已付款", "已签回", "已收款"),
-              "结算方式": ("铺货代销", "买断", "代销"),
+              "结算方式": ("铺货代销", "月结买断", "直接买断"),
+              "业务类型": ("铺货代销", "月结买断", "直接买断"),
               "结算基数": ("实际动销", "签收", "发货")}
+_DATE_COLS.update(("买断日", "付款截止日"))
 _BAR_COLS = ("商品条码", "条码")
 _ENUM_KEYS = tuple(_ENUM_COLS.keys())
 
@@ -90,17 +92,43 @@ def validate_value(col, val):
 
 
 def _locate_row(ws, headers, keys):
-    """按 {列名: 值} 多键定位数据行；列名支持包含匹配（"条码"匹配"商品条码"）。"""
+    """唯一命中才返回行号；重复键返回 False，绝不取第一份。"""
     cols = []
     for k, v in keys.items():
         hit = next((i for i, h in enumerate(headers) if h and k in str(h)), None)
         if hit is None:
             return None
         cols.append((hit + 1, str(v).strip()))
-    for r in range(2, ws.max_row + 1):
-        if all(str(ws.cell(row=r, column=c).value or "").strip() == v for c, v in cols):
-            return r
-    return None
+    matches = [r for r in range(2, ws.max_row + 1)
+               if all(str(ws.cell(row=r, column=c).value or "").strip() == v for c, v in cols)]
+    return matches[0] if len(matches) == 1 else (False if matches else None)
+
+
+def _target_keys(rest):
+    base, keys = rest, {}
+    while "@" in base:
+        base, item = base.rsplit("@", 1)
+        if "=" not in item:
+            raise ValueError("target 的 @主键 必须是 @列名=值")
+        key, value = item.split("=", 1)
+        if not key.strip() or not value.strip():
+            raise ValueError("target 的主键列名与值不能为空")
+        keys[key.strip()] = value.strip()
+    return base, keys
+
+
+def _append_key_row(ws, headers, keys):
+    """价格／贴花追加新政策行；主键立即占位，后续字段绑定同一行。"""
+    row = ws.max_row + 1
+    for key, value in keys.items():
+        matches = [index + 1 for index, header in enumerate(headers) if header and key in str(header)]
+        if len(matches) != 1:
+            raise ValueError(f"主键列 {key} 不存在或不唯一")
+        ok, normalized, reason = validate_value(headers[matches[0] - 1], value)
+        if not ok:
+            raise ValueError(reason)
+        ws.cell(row, matches[0]).value = normalized
+    return row
 
 
 def sheet_row(ws, match_col, match_val):
@@ -150,6 +178,7 @@ def main():
         sys.exit(f"[无法读取主档] {a.master}\n原因：{e}\n主档须为 .xlsx（.xls 请先另存为 .xlsx）。")
 
     changes, conflicts, skipped, rejected = [], [], [], []
+    new_rows = set()
     if confirmed:
         print(f"[已确认] 确认人：{meta.get('operator','—')}　时间：{meta.get('confirmed_at','—')}"
               f"　备注：{meta.get('memo') or '—'}\n")
@@ -169,54 +198,47 @@ def main():
 
         if sheet == "主体":
             if "." not in rest:
-                rejected.append((f.get("field"), tgt, val,
-                                 "主体字段 target 需形如 主体.甲方.名称（角色.列名）"))
+                rejected.append((f.get("field"), tgt, val, "主体 target 须为 主体.甲方.名称"))
                 continue
             role, col = rest.split(".", 1)
             row, headers = sheet_row(ws, ROLE_COL, role)
         else:
             headers = [c.value for c in ws[1]]
-            row = 2
-            # 合同表按合同编号定位（续签多行）；价格/贴花按 条码+生效起 定位（SCD2 多行）；SKU 按条码定位。
-            # 字段自身需带主键说明，格式：列名@条码=xxx 或 列名@条码=xxx@生效起=yyyy-mm-dd
-            if sheet == "合同" and "合同编号" in headers:
-                ci = headers.index("合同编号") + 1
-                if rest == "合同编号":
-                    want = str(val).strip()
-                    row = next((r2 for r2 in range(2, ws.max_row + 1)
-                                if str(ws.cell(row=r2, column=ci).value or "").strip() == want), None)
-                    if row is None:   # 新合同编号：追加一行，绝不覆盖上一份合同
-                        used = [r2 for r2 in range(2, ws.max_row + 1)
-                                if str(ws.cell(row=r2, column=ci).value or "").strip()]
-                        row = (max(used) if used else 1) + 1
+            row, col = None, rest
+            try:
+                col, keys = _target_keys(rest)
+                if sheet == "合同":
+                    if "合同编号" not in headers:
+                        raise ValueError("合同表没有合同编号列")
+                    if col == "合同编号" and not keys:
+                        row = _locate_row(ws, headers, {"合同编号": val})
+                        if row is None:
+                            row = _append_key_row(ws, headers, {"合同编号": val})
+                            new_rows.add((ws.title, row))
+                    else:
+                        if set(keys) != {"合同编号"}:
+                            raise ValueError("续签／修改合同字段必须带 @合同编号=原合同编号，不默认第一份")
+                        row = _locate_row(ws, headers, keys)
+                elif sheet in ("价格", "贴花", "SKU", "履约条款"):
+                    if not keys:
+                        raise ValueError(f"{sheet} 是多行表，target 必须显式携带主键")
+                    if sheet in ("价格", "贴花") and not (any("条码" in key for key in keys) and "生效起" in keys):
+                        raise ValueError("价格／贴花主键必须为条码＋生效起")
+                    row = _locate_row(ws, headers, keys)
+                    if row is None and sheet in ("价格", "贴花"):
+                        row = _append_key_row(ws, headers, keys)
+                        new_rows.add((ws.title, row))
                 else:
-                    row = next((r2 for r2 in range(2, ws.max_row + 1)
-                                if str(ws.cell(row=r2, column=ci).value or "").strip()), 2)
-            elif sheet in ("价格", "贴花", "SKU"):
-                keys = {}          # 从 target 解析 @主键=值
-                base = rest
-                while "@" in base:
-                    base, kv = base.rsplit("@", 1)
-                    if "=" in kv:
-                        k2, v2 = kv.split("=", 1)
-                        keys[k2.strip()] = v2.strip()
-                col = base
-                if not keys:
-                    rejected.append((f.get("field"), tgt, val,
-                                     f"{sheet} 表为多行结构（SCD2/SKU），target 必须带主键，"
-                                     f"如：{base}@商品条码=xxx" + ("@生效起=yyyy-mm-dd" if sheet != "SKU" else "")))
-                    continue
-                _hit = _locate_row(ws, headers, keys)
-                if _hit is None:
-                    rejected.append((f.get("field"), tgt, val,
-                                     f"未找到满足主键 {keys} 的行，请人工定位后录入（不默认写第 2 行）"))
-                    continue
-                row = _hit
-                role, col = "", base     # 主键分支：列名 = 剥离 @主键 后的 base
-            if sheet not in ("价格", "贴花", "SKU"):
-                role, col = "", rest     # 其余表（含合同）仍用完整 rest 作列名
+                    raise ValueError("仅支持主体、合同、价格、贴花、SKU、履约条款表")
+                if row is False:
+                    raise ValueError(f"主键 {keys} 命中多行，已拒绝猜测目标")
+                if row is None:
+                    raise ValueError(f"找不到主键 {keys} 对应的既有行；不会追加不完整记录")
+            except ValueError as exc:
+                rejected.append((f.get("field"), tgt, val, str(exc)))
+                continue
         if row is None or col not in headers:
-            skipped.append((f.get("field"), f"无定位 {tgt}"))
+            rejected.append((f.get("field"), tgt, val, f"无法唯一定位目标列／行：{tgt}"))
             continue
 
         cell = ws.cell(row=row, column=headers.index(col) + 1)
@@ -257,6 +279,10 @@ def main():
     if not a.write:
         print("\n[dry-run] 未写入。确认无误后加 --write 执行。")
         return
+    if rejected and new_rows:
+        sys.exit("[中止] 新政策／新合同行存在被拒字段，本次整单不写入，避免留下只有主键的残行。")
+    if rejected and not changes and not (conflicts and a.force):
+        sys.exit("[中止] 候选字段均被拒绝或无法定位，主档未写入。")
     if not changes and not (conflicts and a.force):
         if confirmed and (data.get("attachments") or []):
             import datetime as _dt0

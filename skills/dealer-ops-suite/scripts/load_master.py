@@ -1,20 +1,8 @@
-"""读取 _主档.xlsx，输出 recon_engine.py 需要的 RECON_CFG JSON。
+"""按当前期间与有效合同生成对账引擎 RECON_CFG。
 
-用法：
-    export RECON_CFG=$(python3 load_master.py /path/_主档.xlsx --period 202610 --asof 2026-11-02)
-    python3 recon_engine.py
-
-从主档同级的 {period} 月份目录（找不到时取最近一个含挂账文件的数字目录）自动发现
-三份源文件：
-    文件名含「挂账」→ jia    含「销售数据」（或含「销售」且不含「库存」）→ sales
-    文件名含「库存」→ inventory
-
-约定：
-- stdout 只输出一行 JSON 配置；所有告警/错误走 stderr（失败时 stdout 保持 0 字节）。
-- 合同条款（结算方式/结算基数/异议期/签回期/付款日）从主档「合同」表读取并传给引擎；
-  读不到时引擎会显式标注「以合同为准」，不会静默套用固定文案。
-- 客户根目录存在 _数据映射.json（结构漂移经用户确认后的映射）时，读入并放进
-  RECON_CFG["mapping"] 交给引擎按映射取数；不存在时行为与旧版完全一致，映射损坏则中止。
+铺货代销读取 BIP 期初、乙方销售和库存；月结买断读取签收、退货、动销。
+指定期间目录不存在即中止，不借用其他月份；多份或零份有效合同均中止。
+stdout 仅输出单行 JSON，告警和错误写 stderr。
 """
 import argparse
 import datetime
@@ -27,30 +15,23 @@ import openpyxl
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import koujing
-
-CFG_SCHEMA_HINT = "RECON_CFG"
+from settlement_rules import RuleViolation, normalize_business_type, parse_day
 
 
 def read_sheet(wb, name):
-    """读取工作表为 [{表头: 值}]；空行跳过。"""
     if name not in wb.sheetnames:
         return []
     ws = wb[name]
-    headers = [str(c.value).strip() if c.value is not None else "" for c in ws[1]]
-    rows = []
-    for r in ws.iter_rows(min_row=2, values_only=True):
-        if all(v is None or str(v).strip() == "" for v in r):
-            continue
-        rows.append(dict(zip(headers, r)))
-    return rows
+    headers = [str(cell.value).strip() if cell.value is not None else "" for cell in ws[1]]
+    return [dict(zip(headers, row)) for row in ws.iter_rows(min_row=2, values_only=True)
+            if any(value is not None and str(value).strip() for value in row)]
 
 
 def month_bounds(period):
-    y, m = int(period[:4]), int(period[4:6])
-    start = datetime.date(y, m, 1)
-    nxt = datetime.date(y + (m == 12), 1 if m == 12 else m + 1, 1)
-    end = nxt - datetime.timedelta(days=1)
-    return start, end, nxt
+    year, month = int(period[:4]), int(period[4:])
+    start = datetime.date(year, month, 1)
+    next_month = datetime.date(year + (month == 12), 1 if month == 12 else month + 1, 1)
+    return start, next_month - datetime.timedelta(days=1), next_month
 
 
 def _date_text(value):
@@ -61,252 +42,258 @@ def _date_text(value):
 
 def _as_int(value):
     try:
-        f = float(str(value).strip())
+        number = float(str(value).strip())
     except (TypeError, ValueError):
         return None
-    return int(f) if f == int(f) else None
+    return int(number) if number == int(number) else None
 
 
-def _pay_day_from_text(text, default=5):
-    """「次月5日前」→ 5；解析不到用默认 5 日。"""
-    m = re.search(r"([0-9]{1,2})\s*日", str(text or ""))
-    if m:
-        day = int(m.group(1))
-        if 1 <= day <= 28:
-            return day
-    return default
+def _pay_day_from_text(value):
+    """仅提取明确日号；解析不到绝不默认 5 日。"""
+    match = re.search(r"([0-9]{1,2})\s*日", str(value or ""))
+    if match and 1 <= int(match.group(1)) <= 28:
+        return int(match.group(1))
+    return None
 
 
 def _excel_files(directory):
     try:
-        return sorted(f for f in os.listdir(directory)
-                      if f.lower().endswith((".xls", ".xlsx", ".xlsm"))
-                      and not f.startswith("~$"))
+        return sorted(name for name in os.listdir(directory)
+                      if name.lower().endswith((".xls", ".xlsx", ".xlsm")) and not name.startswith("~$"))
     except OSError:
         return []
 
 
-def _fail(msg):
-    sys.exit(msg)
+def _fail(message):
+    raise SystemExit(message)
+
+
+def select_contract(contracts, start, end):
+    """只选完整覆盖本期的唯一合同；没有日期就不算命中。"""
+    matches = []
+    for index, contract in enumerate(contracts, 2):
+        try:
+            contract_start = parse_day(contract.get("起始"), "合同起始日")
+            contract_end = parse_day(contract.get("终止"), "合同终止日")
+        except RuleViolation:
+            continue
+        if contract_start <= start and end <= contract_end:
+            matches.append((index, contract))
+    if not matches:
+        _fail(f"[中止] 没有完整覆盖对账期间 {start}—{end} 的有效合同；不默认使用第一份合同。")
+    if len(matches) > 1:
+        _fail("[中止] 多份合同同时覆盖本对账期间，行号："
+              + "、".join(str(index) for index, _ in matches) + "；请先明确唯一有效合同。")
+    return matches[0][1]
+
+
+def _load_rows(path, label):
+    if not path:
+        return []
+    try:
+        with open(path, encoding="utf-8") as handle:
+            rows = json.load(handle)
+    except (OSError, ValueError) as exc:
+        _fail(f"[{label}读取失败] {exc}")
+    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+        _fail(f"[{label}格式错误] 须为流水对象数组")
+    return rows
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("master")
-    ap.add_argument("--period", required=True, help="YYYYMM，如 202610")
-    ap.add_argument("--asof", help="库存/挂账导出日，默认次月 2 日")
-    ap.add_argument("--pay", help="付款日，默认取主档「合同·付款日」中的日期")
-    ap.add_argument("--base", help="月份目录，默认主档同级的 {period} 或主档所在目录")
-    ap.add_argument("--out", help="输出文件全路径，默认 {月份目录}/{period}铺货代销对账.xlsx")
-    ap.add_argument("--strict", action="store_true", help="主档关键信息不全时直接退出")
-    ap.add_argument("--scene", default="每月出账", choices=list(koujing.SCENES),
-                    help="本次作业场景，决定口径确认的必问项")
-    ap.add_argument("--koujing", default="", help="口径确认记录路径，默认客户根目录")
-    ap.add_argument("--allow-legacy", action="store_true",
-                    help="显式放行历史期间；不读口径记录，stderr 强警告，不改变默认阻断")
-    ap.add_argument("--mode", default="full", choices=("full", "incremental"),
-                    help="full 全量出账；incremental 在已有工作簿上重做附表")
-    ap.add_argument("--in-workbook", default="", help="incremental 模式的已有工作簿")
-    ap.add_argument("--overwrite", action="store_true",
-                    help="v1.7 全链路出账用：允许覆盖同名工作簿（apply_v17 会先备份）")
-    ap.add_argument("--pdf", action="store_true", help="出账后导出签章 PDF")
-    ap.add_argument("--pdf-sheets", default="00,01,02,08", help="PDF 包含的表号")
-    a = ap.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("master")
+    parser.add_argument("--period", required=True, help="YYYYMM")
+    parser.add_argument("--asof", help="库存／挂账导出日，默认次月 1 日")
+    parser.add_argument("--pay", help="铺货代销付款日 YYYY-MM-DD；月结买断必须在主档登记付款截止日，不接受此参数")
+    parser.add_argument("--base", help="本期目录；缺省固定为主档同级的 YYYYMM")
+    parser.add_argument("--out", help="输出工作簿全路径")
+    parser.add_argument("--strict", action="store_true")
+    parser.add_argument("--scene", default="每月出账", choices=list(koujing.SCENES))
+    parser.add_argument("--koujing", default="")
+    parser.add_argument("--allow-legacy", action="store_true", help="仅历史铺货只读复核可绕过口径问卡")
+    parser.add_argument("--mode", default="full", choices=("full", "incremental"))
+    parser.add_argument("--in-workbook", default="")
+    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--pdf", action="store_true")
+    parser.add_argument("--pdf-sheets", default="00,01,02,08")
+    parser.add_argument("--original-sales", help="历史销售流水 JSON，用于退货追溯")
+    parser.add_argument("--original-receipts", help="历史签收流水 JSON，用于月结退货追溯")
+    parser.add_argument("--cfg-out", help="将同一份 RECON_CFG 原子写入 JSON 文件，供 apply_v17.py --cfg 使用")
+    args = parser.parse_args()
 
-    # ---- 参数校验放在读文件之前，错误一律走 stderr、stdout 0 字节 ----
-    if not re.fullmatch(r"[0-9]{6}", a.period or ""):
-        _fail(f"[参数错误] --period 需为 6 位年月，如 202610；收到：{a.period!r}")
-    year, month = int(a.period[:4]), int(a.period[4:6])
-    if not 1 <= month <= 12:
-        _fail(f"[参数错误] --period 的月份不合法：{a.period!r}")
-    if not 1900 <= year <= 2999:
-        _fail(f"[参数错误] --period 的年份不合法（应为 1900–2999）：{a.period!r}")
-
-    start, end, nxt = month_bounds(a.period)
-    asof = a.asof or nxt.strftime("%Y-%m-%d")
+    if not re.fullmatch(r"[0-9]{6}", args.period or "") or not 1 <= int(args.period[4:]) <= 12:
+        _fail("[参数错误] --period 须为合法 YYYYMM")
+    start, end, next_month = month_bounds(args.period)
+    asof = args.asof or next_month.isoformat()
     try:
-        ad = datetime.date.fromisoformat(asof)
+        asof_day = datetime.date.fromisoformat(asof)
+        if args.pay:
+            datetime.date.fromisoformat(args.pay)
     except ValueError:
-        _fail(f"[参数错误] --asof 需为 YYYY-MM-DD（如 2026-11-02）；收到：{asof!r}")
-    if a.pay:
-        try:
-            datetime.date.fromisoformat(a.pay)
-        except ValueError:
-            _fail(f"[参数错误] --pay 需为 YYYY-MM-DD（如 2026-11-05）；收到：{a.pay!r}")
-
-    # ---- 读主档 ----
+        _fail("[参数错误] --asof / --pay 须为 YYYY-MM-DD")
     try:
-        wb = openpyxl.load_workbook(a.master, data_only=True)
-    except FileNotFoundError:
-        _fail(f"[找不到主档] {a.master}\n请确认路径，或先用 make_master.py 生成主档模板。")
-    except Exception as e:
-        _fail(f"[无法读取主档] {a.master}\n原因：{e}\n主档须为 .xlsx（.xls 请先另存为 .xlsx）。")
+        wb = openpyxl.load_workbook(args.master, data_only=True)
+    except Exception as exc:
+        _fail(f"[无法读取主档] {args.master}：{exc}")
     try:
-        parties = read_sheet(wb, "主体")
-        contracts = read_sheet(wb, "合同")
+        parties, contracts = read_sheet(wb, "主体"), read_sheet(wb, "合同")
     finally:
         wb.close()
+    party_a = next((row for row in parties if str(row.get("角色", "")).strip() == "甲方"), {})
+    party_b = next((row for row in parties if str(row.get("角色", "")).strip() == "乙方"), {})
+    contract = select_contract(contracts, start, end)
+    try:
+        business_type = normalize_business_type(contract.get("业务类型") or contract.get("结算方式"))
+    except RuleViolation as exc:
+        _fail(f"[业务路由阻断] {exc.message}")
+    if business_type == "monthly_buyout" and args.pay:
+        _fail("[参数错误] 月结买断付款截止日必须在主档合同登记，不能用 --pay 补录")
 
-    pa = next((p for p in parties if str(p.get("角色", "")).strip() == "甲方"), {})
-    pb = next((p for p in parties if str(p.get("角色", "")).strip() == "乙方"), {})
-    ct = contracts[0] if contracts else {}
-
-    # ---- 合同条款（缺项交给引擎显式标注，不在这里补历史演示值）----
-    contract_cfg = {
-        "no": str(ct.get("合同编号") or "").strip(),
-        "start": _date_text(ct.get("起始")),
-        "end": _date_text(ct.get("终止")),
-        "method": str(ct.get("结算方式") or "").strip(),
-        "basis": str(ct.get("结算基数") or "").strip(),
-        "pay_day_text": str(ct.get("付款日") or "").strip(),
-        "objection_days": _as_int(ct.get("异议期(工作日)")),
-        "signback_days": _as_int(ct.get("签回期(工作日)")),
-        "price_annex": str(ct.get("价格附件") or "").strip(),
-    }
-    pay_day = _pay_day_from_text(contract_cfg["pay_day_text"])
-    pay = a.pay or (nxt.replace(day=pay_day)).strftime("%Y-%m-%d")
-
-    root = os.path.dirname(os.path.abspath(a.master))
-
-    def has_src(d):
-        return any("挂账" in f for f in _excel_files(d))
-
-    if a.base:
-        base = a.base
-    else:
+    payment_due = _date_text(contract.get("付款截止日"))
+    if business_type == "monthly_buyout" and not payment_due:
+        # 仅兼容已经是完整日期的旧字段，不解析或虚构“次月某日”。
         try:
-            subs = sorted((os.path.join(root, d) for d in os.listdir(root)
-                           if os.path.isdir(os.path.join(root, d)) and d.isdigit()), reverse=True)
-        except OSError:
-            subs = []
-        cands = [os.path.join(root, a.period)] + subs
-        base = next((d for d in cands if os.path.isdir(d) and has_src(d)), None)
-        if base is None:
-            if has_src(root):
-                _fail(
-                    "[中止] 客户根目录下有挂账文件，但没有可识别的月份子目录（如 202611/）。\n"
-                    "       根目录混放旧导出会导致取错期间，请把三份源文件放进对应月份目录，\n"
-                    "       或用 --base 明确指定本次使用的目录。")
-            base = root
-    base = os.path.abspath(base)
+            payment_due = parse_day(contract.get("付款日"), "付款日").isoformat()
+        except RuleViolation:
+            payment_due = ""
+    payment_due = args.pay or payment_due
+    contract_cfg = {
+        "no": str(contract.get("合同编号") or "").strip(),
+        "start": _date_text(contract.get("起始")), "end": _date_text(contract.get("终止")),
+        "method": str(contract.get("业务类型") or contract.get("结算方式") or "").strip(),
+        "basis": str(contract.get("结算基数") or "").strip(),
+        "pay_day_text": str(contract.get("付款日") or "").strip(),
+        "objection_days": _as_int(contract.get("异议期(工作日)")),
+        "signback_days": _as_int(contract.get("签回期(工作日)")),
+        "price_annex": str(contract.get("价格附件") or "").strip(),
+        "buyout_date": _date_text(contract.get("买断日")),
+        "payment_due_date": payment_due,
+    }
+    problems = []
+    if not party_a.get("名称"):
+        problems.append("主体表缺少甲方名称")
+    if not party_b.get("名称"):
+        problems.append("主体表缺少乙方名称")
+    if not contract_cfg["no"]:
+        problems.append("有效合同缺合同编号")
+    if not party_a.get("开户行") or not party_a.get("账号"):
+        problems.append("甲方开户行或账号为空")
+    pay_day = _pay_day_from_text(contract_cfg["pay_day_text"])
+    pay = args.pay or (next_month.replace(day=pay_day).isoformat() if pay_day else None)
+    if business_type == "consignment" and not pay:
+        problems.append("合同付款日无法识别；不会默认次月 5 日，可用 --pay 明确指定")
+    if business_type == "monthly_buyout":
+        for label, value in (("买断日", contract_cfg["buyout_date"]), ("付款截止日", payment_due)):
+            try:
+                parse_day(value, label)
+            except RuleViolation:
+                problems.append(f"月结买断必须明确{label}，不得默认或与另一日期合并")
+    for problem in problems:
+        print("[主档告警] " + problem, file=sys.stderr)
+    if problems and (args.strict or business_type == "monthly_buyout"):
+        _fail("[中止] 主档关键信息不全；请先补齐合同／主体关键字段。")
+
+    root = os.path.dirname(os.path.abspath(args.master))
+    base = os.path.abspath(args.base or os.path.join(root, args.period))
     if not os.path.isdir(base):
-        _fail(f"[目录不存在] {base}\n请检查 --base 参数或月份目录是否已创建。")
+        _fail(f"[目录不存在] {base}；不会回退到最近月份或客户根目录。")
 
     def pick(rules, default):
-        """rules: [(必须含, 必须不含或 None)]，按顺序取第一个命中；多个候选取文件名最短者。"""
         files = _excel_files(base)
-        for must, deny in rules:
-            hits = [f for f in files if must in f and (deny is None or deny not in f)]
+        for include, exclude in rules:
+            hits = [name for name in files if include in name and (exclude is None or exclude not in name)]
+            if len(hits) > 1:
+                _fail(f"[源文件歧义] 本期目录中“{include}”匹配多份文件："
+                      + "、".join(sorted(hits)) + "；请只保留本期唯一有效源文件。")
             if hits:
-                return sorted(hits, key=lambda x: (len(x), x))[0]
+                return hits[0]
         return default
 
-    # ---- 预检：关键字段缺失时明确告警（stderr，不污染 stdout 的 JSON）----
-    problems = []
-    if not pa.get("名称"):
-        problems.append("主体表缺少「甲方」行或名称为空")
-    if not pb.get("名称"):
-        problems.append("主体表缺少「乙方」行或名称为空")
-    if not contract_cfg["no"]:
-        problems.append("合同表缺少「合同编号」或表为空")
-    if not (pa.get("开户行") and pa.get("账号")):
-        problems.append("甲方开户行或账号为空（对账单付款栏将留白）")
-    for _p in problems:
-        print(f"[主档告警] {_p}", file=sys.stderr)
-    if problems and a.strict:
-        _fail("[中止] 主档关键信息不全，已按 --strict 退出。请先补全主档。")
-    if problems:
-        print(f"[提示] 共 {len(problems)} 项主档信息不全，仍继续生成；请核对输出文件抬头。", file=sys.stderr)
+    if business_type == "monthly_buyout":
+        sources = {"receipts": pick([("签收", None)], "乙方-签收.xlsx"),
+                   "returns": pick([("退货", None)], "乙方-退货.xlsx"),
+                   "sales": pick([("动销", None), ("销售", "库存")], "乙方-动销.xlsx")}
+        out_name = f"{args.period}月结买断对账.xlsx"
+    else:
+        sources = {"jia": pick([("挂账", None), ("BIP", None), ("期初", None)], "甲方-挂账.xls"),
+                   "sales": pick([("销售数据", None), ("销售", "库存")], "乙方-销售数据.xlsx"),
+                   "inventory": pick([("库存", None)], "乙方-库存.xlsx"),
+                   "batch": pick([("效期", None), ("批次", None), ("生产日期", None)], ""),
+                   "promo_use": pick([("使用", None), ("领用", None)], ""),
+                   "barcode_map": pick([("条码对照", None), ("编码对照", None), ("物料编码", None)], ""),
+                   "item_class": pick([("商品分类", None), ("分类", None)], "")}
+        sources["expiry_ref"] = sources["batch"]
+        out_name = f"{args.period}铺货代销对账.xlsx"
 
-    # ---- 结构映射（可选）：客户根目录存在 _数据映射.json 时随 CFG 下传引擎 ----
-    # 不存在时行为与旧版完全一致；文件损坏时中文报错并 exit 1（stdout 保持 0 字节）。
     mapping = None
     mapping_file = os.path.join(root, "_数据映射.json")
     if os.path.exists(mapping_file):
         try:
-            with open(mapping_file, "r", encoding="utf-8-sig") as fh:
-                mapping = json.load(fh)
-        except (OSError, ValueError) as e:
-            _fail(f"[映射文件损坏] {mapping_file}\n原因：{e}\n"
-                  f"请修复该 JSON，或删除后按旧流程运行；未生成任何文件。")
-        if not isinstance(mapping, dict):
-            _fail(f"[映射文件损坏] {mapping_file}\n"
-                  f"顶层必须是 JSON 对象（schema 应为 dealer-ops/data-mapping@1）。")
-        if mapping.get("schema") != "dealer-ops/data-mapping@1":
-            _fail(f"[映射 schema 不支持] {mapping_file}\n"
-                  f"当前 {mapping.get('schema')!r}；要求 'dealer-ops/data-mapping@1'。\n"
-                  f"请用 apply_mapping.py 重新生成/确认映射后重试。")
-
-    # ---- 阶段 G：业务口径确认门禁（1.7.0 起默认强制）----
-    koujing_path = a.koujing or os.path.join(root, koujing.FILENAME)
-    if a.allow_legacy:
-        kj = koujing.blank(a.scene, a.period, ad.isoformat())
-        kj["confirmed_by"] = "legacy"
-        kj["config_sha256"] = koujing.digest(kj)
-        print("[警告] --allow-legacy 已放行，未读取口径确认记录；"
-              "本次结果仅用于历史期间只读复核，不得作为正式交付件。", file=sys.stderr)
-    else:
-        kj = koujing.load(koujing_path, a.scene)
-        print(f"[口径确认] 场景 {kj['scene']} · 确认人 {kj['confirmed_by']} · "
-              f"哈希 {kj['config_sha256'][:12]}", file=sys.stderr)
-    if a.mode == "incremental" and not a.in_workbook:
-        _fail("[参数错误] --mode incremental 需要 --in-workbook 指定已有工作簿。")
+            with open(mapping_file, encoding="utf-8-sig") as handle:
+                mapping = json.load(handle)
+        except (OSError, ValueError) as exc:
+            _fail(f"[映射文件损坏] {mapping_file}：{exc}")
+        if not isinstance(mapping, dict) or mapping.get("schema") != "dealer-ops/data-mapping@1":
+            _fail("[映射 schema 不支持] 要求 dealer-ops/data-mapping@1")
 
     cfg = {
-        "base_dir": base,
-        "master_path": os.path.abspath(a.master),
-        "party_a": {"name": pa.get("名称", ""), "tax": pa.get("统一社会信用代码", ""),
-                    "addr": pa.get("地址", ""), "contact": pa.get("联系人", ""),
-                    "phone": pa.get("电话", "")},
-        "party_b": {"name": pb.get("名称", ""), "tax": pb.get("统一社会信用代码", ""),
-                    "addr": pb.get("地址", ""), "contact": pb.get("联系人", ""),
-                    "phone": pb.get("电话", "")},
+        "business_type": business_type, "base_dir": base, "master_path": os.path.abspath(args.master),
+        "party_a": {"name": party_a.get("名称", ""), "tax": party_a.get("统一社会信用代码", ""),
+                    "addr": party_a.get("地址", ""), "contact": party_a.get("联系人", ""),
+                    "phone": party_a.get("电话", "")},
+        "party_b": {"name": party_b.get("名称", ""), "tax": party_b.get("统一社会信用代码", ""),
+                    "addr": party_b.get("地址", ""), "contact": party_b.get("联系人", ""),
+                    "phone": party_b.get("电话", "")},
         "contract": contract_cfg,
-        "bank": {"account_name": pa.get("户名") or pa.get("名称", ""),
-                 "account_no": pa.get("账号", ""),
-                 "bank_name": pa.get("开户行", "")},
-        "period": {
-            "start": start.strftime("%Y-%m-%d"),
-            "end": end.strftime("%Y-%m-%d"),
-            "period_cn": f"{start.year} 年 {start.month} 月",
-            "asof": ad.isoformat(),
-            "asof_cn": f"{ad.year} 年 {ad.month:02d} 月 {ad.day:02d} 日",
-            "pay_cn": f"{datetime.date.fromisoformat(pay).year} 年 "
-                      f"{datetime.date.fromisoformat(pay).month:02d} 月 "
-                      f"{datetime.date.fromisoformat(pay).day:02d} 日",
-            "next_month": ad.month,
-            "out_name": f"{a.period}铺货代销对账.xlsx",
-        },
-        "sources": {
-            "jia": pick([("挂账", None)], "甲方-挂账.xls"),
-            "sales": pick([("销售数据", None), ("销售", "库存")], "乙方-销售数据.xlsx"),
-            "inventory": pick([("库存", None)], "乙方-库存.xlsx"),
-            # 可选源：批次效期表、乙方试用装使用表。缺省为空 → 引擎按「未提供」处理，不猜
-            "batch": pick([("效期", None), ("批次", None), ("生产日期", None)], ""),
-            "promo_use": pick([("使用", None), ("领用", None)], ""),
-            "barcode_map": pick([("条码对照", None), ("编码对照", None),
-                                 ("物料编码", None), ("条码映射", None)], ""),
-            # 1.7.0 新增：商品分类（发货量/物料属性）与效期参考（只给批次与到期日）
-            "item_class": pick([("商品分类", None), ("分类", None)], ""),
-            "expiry_ref": pick([("效期", None), ("批次", None), ("生产日期", None)], ""),
-        },
+        "bank": {"account_name": party_a.get("户名") or party_a.get("名称", ""),
+                 "account_no": party_a.get("账号", ""), "bank_name": party_a.get("开户行", "")},
+        "period": {"start": start.isoformat(), "end": end.isoformat(),
+                   "period_cn": f"{start.year} 年 {start.month} 月", "asof": asof_day.isoformat(),
+                   "asof_cn": f"{asof_day.year} 年 {asof_day.month:02d} 月 {asof_day.day:02d} 日",
+                   "pay_cn": (f"{parse_day(pay).year} 年 {parse_day(pay).month:02d} 月 {parse_day(pay).day:02d} 日"
+                              if pay else "主档未登记，以合同原文为准"),
+                   "next_month": asof_day.month, "out_name": out_name},
+        "sources": sources,
+        "original_sales": _load_rows(args.original_sales, "历史销售"),
+        "original_receipts": _load_rows(args.original_receipts, "历史签收"),
     }
     if mapping is not None:
         cfg["mapping"] = mapping
-    if a.out:
-        cfg["out_file"] = os.path.abspath(a.out)
-    cfg["koujing"] = kj
-    if a.overwrite:
-        cfg["overwrite"] = True   # v1.7 由 apply_v17 先备份再覆盖
-    cfg["v17"] = {
-        "enabled": True,
-        "mode": a.mode,
-        "input_workbook": os.path.abspath(a.in_workbook) if a.in_workbook else "",
-        "pdf": bool(a.pdf),
-        "pdf_sheets": [x.strip() for x in a.pdf_sheets.split(",") if x.strip()],
-        "koujing_path": os.path.abspath(koujing_path),
-    }
-    print(json.dumps(cfg, ensure_ascii=False))
+    if args.out:
+        cfg["out_file"] = os.path.abspath(args.out)
+    if args.overwrite:
+        cfg["overwrite"] = True
+    if business_type == "consignment":
+        koujing_path = args.koujing or os.path.join(root, koujing.FILENAME)
+        if args.allow_legacy:
+            record = koujing.blank(args.scene, args.period, asof_day.isoformat())
+            record["confirmed_by"] = "legacy"
+            record["config_sha256"] = koujing.digest(record)
+            print("[警告] --allow-legacy 仅供历史铺货只读复核，不作为正式交付件。", file=sys.stderr)
+        else:
+            record = koujing.load(koujing_path, args.scene)
+        if args.mode == "incremental" and not args.in_workbook:
+            _fail("[参数错误] incremental 需要 --in-workbook")
+        cfg["koujing"] = record
+        cfg["v17"] = {"enabled": True, "mode": args.mode,
+                      "input_workbook": os.path.abspath(args.in_workbook) if args.in_workbook else "",
+                      "pdf": bool(args.pdf), "pdf_sheets": [x.strip() for x in args.pdf_sheets.split(",") if x.strip()],
+                      "koujing_path": os.path.abspath(koujing_path)}
+    else:
+        cfg["v17"] = {"enabled": False}
+    payload = json.dumps(cfg, ensure_ascii=False)
+    if args.cfg_out:
+        cfg_out = os.path.abspath(args.cfg_out)
+        try:
+            os.makedirs(os.path.dirname(cfg_out), exist_ok=True)
+            temp = cfg_out + ".tmp"
+            with open(temp, "w", encoding="utf-8") as handle:
+                handle.write(payload + "\n")
+            os.replace(temp, cfg_out)
+        except OSError as exc:
+            _fail(f"[配置写入失败] {cfg_out}：{exc}")
+    print(payload)
 
 
 if __name__ == "__main__":

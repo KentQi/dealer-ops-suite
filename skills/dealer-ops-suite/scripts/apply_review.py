@@ -17,8 +17,10 @@
 2. workbook_sha256 必须等于当前工作簿 sha256（复核后文件已变更 → 必须重评）；
 3. checklist 必须覆盖 R1–R10（缺 → 失败；未知 id → 警告；重复 → 警告）；
 4. 一致性：有 level=阻断 的 finding ⇒ verdict 必须=不通过；
-   无阻断但有 警告 finding ⇒ 不得为 通过；不通过/有条件通过 的 summary 必须非空；
-5. 若提供 --packet：复核包 schema、workbook.sha256 必须与当前工作簿一致，period 不得冲突。
+   无阻断但有 警告 finding 或任一清单项不通过 ⇒ 不得为 通过；
+   不通过/有条件通过 的 summary 必须非空；
+5. --apply 必须提供 --packet；复核包 schema、workbook.sha256 必须与当前工作簿一致，period 不得冲突。
+   无包外部报告只能 dry-run／人工归档，不写复核表和复核锁。
 
 幂等：同一份报告重复 --apply 不会重复改写（检测到「报告已归档 + 锁 post_sha256 == 当前文件」时跳过）。
 """
@@ -440,8 +442,8 @@ def validate_report(report, workbook_path, current_sha, packet=None, packet_path
         if verdict in ("不通过", "有条件通过") and not summary.strip():
             errors.append("复核结论为「%s」时 summary 不得为空" % verdict)
         if verdict == "通过" and checklist_bad:
-            warnings.append("清单项 " + "、".join(checklist_bad)
-                            + " 结果为「不通过」，但复核结论为「通过」，请复核判定是否一致")
+            errors.append("清单项 " + "、".join(checklist_bad)
+                          + " 结果为「不通过」，复核结论不得为「通过」；请复核判定是否一致")
 
     if "period" not in report:
         warnings.append("报告缺少 period 字段（按 null 处理）")
@@ -748,7 +750,7 @@ def main(argv=None):
         description="L6 复核结论校验与落盘（交付门禁，dealer-ops/review-report@1）")
     parser.add_argument("workbook", help="被复核的对账工作簿（.xlsx）")
     parser.add_argument("report", nargs="?", help="复核报告 JSON（由 LLM 按复核包产出；--check 时可省略）")
-    parser.add_argument("--packet", help="复核包 JSON（提供时校验复核包与被复核文件哈希一致）")
+    parser.add_argument("--packet", help="复核包 JSON（--apply 必须提供；校验其与被复核文件哈希一致）")
     parser.add_argument("--report-dir", help="报告归档目录（默认 <工作簿目录>/_复核记录）")
     parser.add_argument("--apply", action="store_true", help="写入 08-复核记录并落盘复核锁")
     parser.add_argument("--check", action="store_true", help="交付前校验复核记录与复核锁是否有效")
@@ -756,6 +758,9 @@ def main(argv=None):
 
     if args.apply and args.check:
         print("[参数错误] --apply 与 --check 互斥，只能二选一。", file=sys.stderr)
+        return 2
+    if args.apply and not args.packet:
+        print("[参数错误] --apply 必须提供 --packet；无复核包的外部报告只能 dry-run，不能写复核表或复核锁。", file=sys.stderr)
         return 2
     if not args.check and not args.report:
         print("[参数错误] 缺少复核报告 JSON 路径（--check 模式可省略）。", file=sys.stderr)

@@ -274,7 +274,7 @@ def check_rebate(spec, values, findings):
 
 
 def check_fc(fc_spec, fc_values, main_spec, main_values, findings):
-    if not fc_spec or not fc_values:
+    if fc_spec is None or fc_values is None:
         add(findings, "附件/跨文件", "medium", "未提供防窜货附件审阅", "FC", "附件一",
             "", "请把附件签署日期纳入合同包审阅，确认与主合同签订时间一致。")
         return
@@ -384,18 +384,42 @@ def render_markdown(result):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="合同包审阅（确定性）")
-    ap.add_argument("--spec", required=True, help="主合同 spec，如 spec/jx.json")
-    ap.add_argument("--values", required=True, help="主合同 values.json")
+    ap = argparse.ArgumentParser(description="合同包审阅与三文件放行")
+    ap.add_argument("--spec", help="主合同 spec，如 spec/jx.json")
+    ap.add_argument("--values", help="主合同 values.json")
     ap.add_argument("--fc-spec", help="附件一 spec，如 spec/fc.json")
     ap.add_argument("--fc-values", help="附件一 values.json")
-    ap.add_argument("--policy", help="价格政策表 .xlsx（可选）")
-    ap.add_argument("--llm-findings", help="LLM 语义审阅 findings JSON（可选）")
-    ap.add_argument("--out", help="输出 JSON 路径")
+    ap.add_argument("--policy", help="价格政策表 .xlsx；普通审阅可选，放行必需")
+    ap.add_argument("--llm-findings", help="LLM 语义审阅 findings JSON；空 findings 数组也算已合并")
+    ap.add_argument("--out", help="输出 JSON 路径；--release 必填")
     ap.add_argument("--md", help="输出 Markdown 路径")
     ap.add_argument("--json", action="store_true", help="stdout 输出 JSON")
     ap.add_argument("--fail-on-high", action="store_true", help="存在 high 时也以 1 退出")
+    ap.add_argument("--release", action="store_true", help="高风险逐项处理后生成三文件最终放行凭证")
+    ap.add_argument("--approve-write", action="store_true", help="只生成写前结构预检凭证，不读取成品哈希")
+    ap.add_argument("--main-file", help="放行用最终主合同文件")
+    ap.add_argument("--fc-file", help="放行用最终防窜货附件文件")
+    ap.add_argument("--resolutions", help="高风险处理记录：finding id → status/note/owner")
+    ap.add_argument("--verify-release", help="只读校验审阅 JSON 中的放行凭证与当前三文件哈希")
     args = ap.parse_args()
+
+    if args.verify_release:
+        from contract_release import verify_release
+        ok, problems = verify_release(load_json(args.verify_release))
+        if not ok:
+            for problem in problems:
+                print("[放行无效] " + problem, file=sys.stderr)
+            return 1
+        print("合同包放行有效：主合同、防窜货附件、价格政策哈希均与放行时一致。")
+        return 0
+    if args.release and args.approve_write:
+        fail("--release 与 --approve-write 是两个阶段，不得同时使用")
+    if not args.spec or not args.values:
+        fail("普通审阅、--approve-write 与 --release 均须给 --spec 和 --values")
+    if (args.release or args.approve_write) and not args.out:
+        fail("--approve-write / --release 必须同时用 --out 持久化凭证")
+    if args.resolutions and not (args.release or args.approve_write):
+        fail("--resolutions 只能与 --approve-write 或 --release 一起使用，不得用来删改原审阅发现")
 
     spec = load_json(args.spec)
     values = load_json(args.values)
@@ -415,6 +439,22 @@ def main():
     check_fc(fc_spec, fc_values, spec, values, findings)
     check_policy(args.policy, findings)
     llm_review = merge_llm(args.llm_findings, findings)
+    if args.release or args.approve_write:
+        if fc_spec is None or fc_values is None:
+            add(findings, "附件/跨文件", "blocker", "写前审阅与放行必须包含防窜货附件", "FC", "附件一",
+                "", "补齐附件 spec 与 values 后重新审阅。")
+        if not args.policy:
+            add(findings, "政策表", "blocker", "写前审阅与放行必须包含最终价格政策", "policy", "价格政策",
+                "", "提供最终政策文件后重新审阅。")
+        # 政策检查保留自己的 severity，不能把所有问题降级成 high。
+        for item in findings:
+            if item["category"] == "政策表" and item["field"] == "policy":
+                try:
+                    evidence = json.loads(item["evidence"].get("value", "{}"))
+                    if evidence.get("severity") == "blocker":
+                        item["severity"] = "blocker"
+                except (TypeError, ValueError):
+                    pass
 
     findings.sort(key=lambda x: (SEVERITY_ORDER[x["severity"]], x["category"], x["field"]))
     for index, item in enumerate(findings, 1):
@@ -423,18 +463,24 @@ def main():
     result = {
         "schema": "dealer-ops/contract-review@1",
         "generated_at": datetime.now().isoformat(timespec="seconds"),
-        "inputs": {
-            "spec": args.spec,
-            "values": args.values,
-            "fc_spec": args.fc_spec,
-            "fc_values": args.fc_values,
-            "policy": args.policy,
-            "llm_findings": args.llm_findings,
-        },
-        "summary": summarize(findings),
-        "findings": findings,
-        "llm_review": llm_review,
+        "inputs": {"spec": args.spec, "values": args.values, "fc_spec": args.fc_spec,
+                   "fc_values": args.fc_values, "policy": args.policy, "llm_findings": args.llm_findings},
+        "summary": summarize(findings), "findings": findings, "llm_review": llm_review,
     }
+    if args.approve_write:
+        from contract_release import build_write_approval
+        try:
+            result["release"] = build_write_approval(findings, llm_review, args.resolutions,
+                                                      inputs=result["inputs"])
+        except (ValueError, OSError, json.JSONDecodeError) as exc:
+            fail("合同包写前审阅未通过：" + str(exc), code=1)
+    if args.release:
+        from contract_release import build_release
+        try:
+            result["release"] = build_release(findings, llm_review, args.main_file, args.fc_file,
+                                              args.policy, args.resolutions, inputs=result["inputs"])
+        except (ValueError, OSError, json.JSONDecodeError) as exc:
+            fail("合同包未放行：" + str(exc), code=1)
 
     markdown = render_markdown(result)
     if args.out:
@@ -445,11 +491,12 @@ def main():
         with open(args.md, "w", encoding="utf-8") as fh:
             fh.write(markdown)
             fh.write("\n")
-
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
         print(markdown)
+        if args.release:
+            print("\n合同包已放行；交付前仍须校验三份最终文件哈希。")
         if args.out:
             print(f"\nJSON：{args.out}")
         if args.md:
