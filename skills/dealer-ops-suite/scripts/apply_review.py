@@ -20,7 +20,10 @@
    无阻断但有 警告 finding 或任一清单项不通过 ⇒ 不得为 通过；
    不通过/有条件通过 的 summary 必须非空；
 5. --apply 必须提供 --packet；复核包 schema、workbook.sha256 必须与当前工作簿一致，period 不得冲突。
-   无包外部报告只能 dry-run／人工归档，不写复核表和复核锁。
+   无包外部报告只能 dry-run／人工归档，不写复核表和复核锁；
+6. 复核包 rule_result 为 `_external` 引用对象时（规则底稿外置形态）：引用必须是纯文件名，
+   侧车必须存在于复核包同目录且字节 SHA-256 与引用一致；缺失或哈希不符即拒绝。
+   rule_result 为旧内联对象或 null 的历史归档包不做该校验（向后兼容）。
 
 幂等：同一份报告重复 --apply 不会重复改写（检测到「报告已归档 + 锁 post_sha256 == 当前文件」时跳过）。
 """
@@ -332,6 +335,38 @@ def _read_review_sheet(wb):
 
 
 # ---------------------------------------------------------------- 报告校验
+def _rule_result_sidecar_errors(rule_ref, packet_abs_path):
+    """校验复核包 `_external` 形态的 rule_result 引用；返回错误列表。
+
+    只在 rule_result 是含 `_external` 的 dict 时调用方才会进来；
+    旧内联对象、null 或无该键的历史归档包不做任何校验。
+    """
+    errors = []
+    external = rule_ref.get("_external")
+    if not isinstance(external, str) or not external.strip() \
+            or os.path.basename(external) != external:
+        errors.append("复核包 rule_result._external 必须是纯文件名（不含路径分隔符），收到 %r"
+                      % (external,))
+        return errors
+    if not packet_abs_path:
+        errors.append("复核包引用了外置规则底稿 %s，但未提供复核包文件路径；"
+                      "请通过 --packet 指向复核包文件后重试" % external)
+        return errors
+    sidecar_path = os.path.join(os.path.dirname(os.path.abspath(packet_abs_path)), external)
+    if not os.path.isfile(sidecar_path):
+        errors.append("复核包引用的规则底稿不存在：%s；请与复核包一并归档或重新生成复核包"
+                      % external)
+        return errors
+    try:
+        sidecar_sha = sha256_file(sidecar_path)
+    except OSError as exc:
+        errors.append("复核包引用的规则底稿无法读取：%s（%s）" % (sidecar_path, exc))
+        return errors
+    if sidecar_sha != rule_ref.get("sha256"):
+        errors.append("规则底稿与复核包不一致：侧车已变更或被替换，须重新生成复核包（不可手工修补）")
+    return errors
+
+
 def _period_pair(value):
     """把 period 归一成 (start, end) 或字符串；无法归一返回 (None, None)。"""
     if isinstance(value, dict):
@@ -344,8 +379,13 @@ def _period_pair(value):
     return None, None
 
 
-def validate_report(report, workbook_path, current_sha, packet=None, packet_path=None):
-    """校验报告是否可应用；返回 (errors, warnings)，errors 非空即拒绝。"""
+def validate_report(report, workbook_path, current_sha, packet=None, packet_path=None,
+                    packet_abs_path=None):
+    """校验报告是否可应用；返回 (errors, warnings)，errors 非空即拒绝。
+
+    packet_path：复核包显示名（打印/留痕用）；packet_abs_path：复核包绝对路径，
+    用于定位 `_external` 引用的规则底稿侧车（侧车固定在复核包同目录）。
+    """
     errors = []
     warnings = []
     if not isinstance(report, dict):
@@ -469,6 +509,9 @@ def validate_report(report, workbook_path, current_sha, packet=None, packet_path
             elif report.get("period") is not None and packet.get("period") is not None:
                 warnings.append("报告 period 与复核包形态不同，未做一致性比对"
                                 "（建议统一写 {\"start\": \"YYYY-MM-DD\", \"end\": \"YYYY-MM-DD\"}）")
+            rule_ref = packet.get("rule_result")
+            if isinstance(rule_ref, dict) and "_external" in rule_ref:
+                errors.extend(_rule_result_sidecar_errors(rule_ref, packet_abs_path))
     return errors, warnings
 
 
@@ -793,8 +836,10 @@ def main(argv=None):
 
     packet = None
     packet_name = None
+    packet_abs = None
     if args.packet:
         packet_path = os.path.abspath(args.packet)
+        packet_abs = packet_path
         try:
             packet = load_json(packet_path)
         except OSError as exc:
@@ -812,7 +857,8 @@ def main(argv=None):
         return 0
 
     errors, warnings = validate_report(report, workbook_path, current_sha,
-                                       packet=packet, packet_path=packet_name)
+                                       packet=packet, packet_path=packet_name,
+                                       packet_abs_path=packet_abs)
     for warning in warnings:
         print("[警告] " + warning, file=sys.stderr)
     if errors:
