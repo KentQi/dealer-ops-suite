@@ -1,4 +1,4 @@
-"""L6 复核结论校验与落盘（交付门禁）。
+"""R1–R10 语义复核结论校验与落盘（交付门禁）。
 
 用法：
     python3 apply_review.py <工作簿.xlsx> <报告.json> [--packet packet.json] [--report-dir DIR] [--apply|--check]
@@ -38,6 +38,8 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 try:  # 脚本目录即 sys.path[0]；作为模块被导入时兜底
+    from check_public_copy import clean_properties
+    from check_public_copy import scan as _copy_scan
     from review_common import (
         DELIVERABLE_VERDICTS, LEGACY_REVIEW_SHEETS, LEVELS, LOCK_NAME,
         REQUIRED_IDS, REQUIRED_ITEMS, RESULTS, REVIEW_DIR, REVIEW_SHEET, review_sheet_name,
@@ -46,6 +48,8 @@ try:  # 脚本目录即 sys.path[0]；作为模块被导入时兜底
     )
 except ImportError:  # pragma: no cover - 仅异常运行方式触发
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from check_public_copy import clean_properties
+    from check_public_copy import scan as _copy_scan
     from review_common import (
         DELIVERABLE_VERDICTS, LEGACY_REVIEW_SHEETS, LEVELS, LOCK_NAME,
         REQUIRED_IDS, REQUIRED_ITEMS, RESULTS, REVIEW_DIR, REVIEW_SHEET, review_sheet_name,
@@ -200,13 +204,16 @@ def write_review_sheet(wb, report, pre_sha, archive_name, packet_name, workbook_
     summary = report.get("summary") if isinstance(report.get("summary"), str) else ""
 
     row = 1
-    _put(ws, row, 1, len(SHEET_WIDTHS), "%s 复核记录（L6 LLM 语义复核）" % _sheet[:2],
+    _put(ws, row, 1, len(SHEET_WIDTHS), "%s 复核记录（R1–R10 LLM 语义复核）" % _sheet[:2],
          bold=True, size=14, color="FFFFFF", fill=NAVY, horizontal="center")
     ws.row_dimensions[row].height = 30
     row += 1
+    # 工作簿名不带扩展名：.xlsx 会命中 l1 禁词「.xls」（内部文件名不得进交付簿），
+    # 而交付工作簿自己的显示名本就是对外信息。
+    display_name = os.path.splitext(str(workbook_name or ""))[0] or "—"
     _put(ws, row, 1, len(SHEET_WIDTHS),
-         "被复核工作簿：%s　·　复核协议：%s　·　本记录由 apply_review.py 写入，复核后任何保存都会使复核锁失效"
-         % (workbook_name or "—", SCHEMA_REPORT),
+         "被复核工作簿：%s　·　复核协议：R1–R10　·　本记录由 apply_review.py 写入，复核后任何保存都会使复核锁失效"
+         % display_name,
          size=9, color="595959", fill=GREY)
     ws.row_dimensions[row].height = 30
     row += 2
@@ -565,7 +572,7 @@ def _archive_report(report, archive_dir, workbook_path):
     return name + ".json", json_path
 
 
-def _write_lock(archive_dir, pre_sha, post_sha, verdict, report_name, koujing=None):
+def _write_lock(archive_dir, pre_sha, post_sha, verdict, report_name, koujing=None, gate=None):
     lock = {
         "pre_sha256": pre_sha,
         "post_sha256": post_sha,
@@ -573,9 +580,11 @@ def _write_lock(archive_dir, pre_sha, post_sha, verdict, report_name, koujing=No
         "report": report_name,
         "applied_at": iso_now(),
         # 口径绑定：复核包携带的口径路径／哈希写入锁，--check 时与当前口径文件比对；
-        # 旧格式包无该键时为 None，校验按缺席跳过（兼容历史归档）。
+        # 旧格式复核锁无 koujing 键时为 None，校验按缺席跳过（兼容历史归档）。
         "koujing": koujing if isinstance(koujing, dict) and koujing.get("path")
         and koujing.get("sha256") else None,
+        # 对外文案门禁终态：--apply 落盘前对最终工作簿复扫的结果，--check 重扫比对。
+        "gate": gate if isinstance(gate, dict) and gate.get("ran") else None,
     }
     path = os.path.join(archive_dir, LOCK_NAME)
     try:
@@ -664,7 +673,12 @@ def _check_koujing_lock(lock, errors):
 
 # ---------------------------------------------------------------- --apply 落盘
 def _apply_to_workbook(workbook_path, report, pre_sha, archive_name, packet_name):
-    """写/更新 08 表并原子替换工作簿；返回 post_sha256。"""
+    """写/更新复核记录表并原子替换工作簿；返回 (post_sha256, gate)。
+
+    对外文案门禁在**替换前的临时副本**上复扫：复核记录表自己的文字（R1–R10
+    清单、副标题、保存后的文档属性）也是交付簿的一部分，必须过闸——不合规
+    则删除临时副本并报错，原工作簿一个字节都不会变（无半成品状态）。
+    """
     workbook_path = os.path.abspath(workbook_path)
     try:
         wb = openpyxl.load_workbook(workbook_path, data_only=False)
@@ -689,6 +703,24 @@ def _apply_to_workbook(workbook_path, report, pre_sha, archive_name, packet_name
             wb.close()
         except Exception:  # noqa: BLE001
             pass
+    clean_properties(tmp_path)
+    try:
+        gate = _copy_scan(tmp_path, strict=False)
+    except SystemExit as exc:  # pragma: no cover - strict=False 不应触发
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise ReviewError("[对外门禁异常] 复核记录副本扫描失败：%s" % exc)
+    if gate["problems"]:
+        first = "；".join(gate["problems"][:3])
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise ReviewError("[对外门禁未通过] 复核记录落盘后工作簿不合规，已回滚、原工作簿未受影响：\n"
+                          "  · %s\n复核记录表文字与对外文案治理同步清理后重试。"
+                          % first)
     try:
         os.replace(tmp_path, workbook_path)
     except OSError as exc:
@@ -699,7 +731,8 @@ def _apply_to_workbook(workbook_path, report, pre_sha, archive_name, packet_name
         raise ReviewError("[写入失败] 目标工作簿被占用或不可写：%s\n原因：%s\n"
                           "请关闭 Excel/WPS 后重试；原工作簿未受影响。" % (workbook_path, exc))
     try:
-        return sha256_file(workbook_path)
+        return sha256_file(workbook_path), {"ran": True, "ok": True,
+                                            "scanned_strings": gate["scanned_strings"]}
     except OSError as exc:
         raise ReviewError("[无法读取工作簿] 保存后计算哈希失败：%s（%s）" % (workbook_path, exc))
 
@@ -755,6 +788,31 @@ def do_check(workbook_path, archive_dir):
     except OSError as exc:
         errors.append("[无法读取工作簿] %s（%s）" % (workbook_path, exc))
         current_sha = None
+
+    # 对外文案门禁终态复扫：复核记录表落盘、复核后的任何改动都算交付簿的一部分，
+    # 当前文件必须能独立过闸。旧格式锁无 gate 键时只提示，不阻断（内容仍以本次复扫为准）。
+    if lock is not None and not isinstance(lock.get("gate"), dict):
+        warnings.append("复核锁未携带对外门禁结果（旧格式锁）；以下为本目录的实时复扫结论")
+    try:
+        gate_now = _copy_scan(workbook_path, strict=False)
+    except SystemExit:  # pragma: no cover - strict=False 不应触发
+        gate_now = None
+    except Exception as exc:  # noqa: BLE001 - 扫描异常视为不可交付
+        gate_now = None
+        errors.append("对外文案门禁扫描失败：%s；不得交付" % exc)
+    if gate_now is not None:
+        if gate_now["problems"]:
+            errors.append("工作簿未通过对外文案门禁（%d 项，首项：%s）；复核后引入违禁内容不得交付"
+                          % (len(gate_now["problems"]), gate_now["problems"][0][:80]))
+        else:
+            checks = gate_now["scanned_strings"]
+            if lock is not None and isinstance(lock.get("gate"), dict):
+                if not lock["gate"].get("ok"):
+                    errors.append("复核锁记录的门禁结论为不通过，不得交付")
+                elif not lock["gate"].get("ran"):
+                    errors.append("复核锁记录门禁被跳过（--no-gate），按裁决不得交付；请重新出账并复核")
+            elif lock is not None:
+                warnings.append("本次实时复扫通过（扫描 %d 个字符串）" % checks)
 
     if lock is not None:
         if current_sha is not None and current_sha != lock.get("post_sha256"):
@@ -917,9 +975,11 @@ def main(argv=None):
         print("[阻断] 复核结论为「不通过」，不得交付：请修正工作簿后重新出账并重新复核。", file=sys.stderr)
         return 1
 
-    post_sha = _apply_to_workbook(workbook_path, report, current_sha, archive_name, packet_name)
+    post_sha, gate_result = _apply_to_workbook(workbook_path, report, current_sha,
+                                               archive_name, packet_name)
     lock, lock_path = _write_lock(archive_dir, current_sha, post_sha, verdict, archive_name,
-                                  koujing=packet.get("koujing") if isinstance(packet, dict) else None)
+                                  koujing=packet.get("koujing") if isinstance(packet, dict) else None,
+                                  gate=gate_result)
     sheet_count = _count_sheets(workbook_path)
     print("[复核记录] 已写入「%s」（工作表 %s 张）"
           % (REVIEW_SHEET, sheet_count if sheet_count is not None else "?"))

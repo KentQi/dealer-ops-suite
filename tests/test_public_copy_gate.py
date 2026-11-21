@@ -29,8 +29,10 @@ from check_public_copy import clean_properties, load_copy, scan  # noqa: E402
 DOC89_TERMS = ("效期", "批次", "到期", "临期", "预警", "剩余月数", "FIFO")
 
 
-def save_book(path, sheets, *, creator=None, last_modified_by=None):
+def save_book(path, sheets, *, creator=None, last_modified_by=None,
+              created=None, modified=None):
     """openpyxl 默认会写入 creator=openpyxl；默认清空作者痕迹，便于按需单独测 A4。"""
+    from datetime import datetime
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
     for name, rows in sheets.items():
@@ -39,6 +41,10 @@ def save_book(path, sheets, *, creator=None, last_modified_by=None):
             ws.append(row)
     wb.properties.creator = "" if creator is None else creator
     wb.properties.lastModifiedBy = "" if last_modified_by is None else last_modified_by
+    if created is not None:
+        wb.properties.created = created
+    if modified is not None:
+        wb.properties.modified = modified
     wb.save(path)
     return wb
 
@@ -260,6 +266,49 @@ class PublicCopyGateTest(unittest.TestCase):
         self.assertIn("OK", run.stdout)
         result = scan(signed, cfg=self.minimal_cfg(), strict=False)
         self.assertTrue(result["ok"], result["problems"])
+
+    def test_core_props_timestamps_are_immune_to_banned_words(self):
+        # T013 flaky 根因钉死：docProps ISO 时间戳（含「1:1」的 HH:MM:SS 约 3.7% 概率
+        # 命中禁词子串）是机器状态不是对外文案——采集源头排除后，含这种时间戳的
+        # 干净工作簿必须稳定通过（修复前该用例随机翻红）
+        from datetime import datetime
+        path = self.book("时间戳.xlsx", {"对账": [["说明"], ["正常文案"]]},
+                         created=datetime(2026, 11, 21, 1, 15, 53),
+                         modified=datetime(2026, 11, 21, 1, 11, 0))
+        for _ in range(3):
+            result = scan(str(path), cfg=self.minimal_cfg(), strict=False)
+            self.assertTrue(result["ok"], result["problems"])
+
+    def test_chart_and_custom_parts_are_scanned(self):
+        # T013 盲区关闭：图表/绘图 XML 与 docProps/custom.xml 是作者文字承载部件，
+        # 此前不在扫描口径内，禁词可藏匿交付（审计实测）
+        import zipfile
+        path = self.book("图表.xlsx", {"对账": [["说明"], ["正常文案"]]})
+        with zipfile.ZipFile(path) as zf:
+            items = {n: zf.read(n) for n in zf.namelist()}
+        items["xl/charts/chart1.xml"] = (
+            '<?xml version="1.0"?><chart xmlns:a="x"><a:t>主档数量核对图</a:t></chart>'
+        ).encode("utf-8")
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for name, data in items.items():
+                zf.writestr(name, data)
+        result = scan(str(path), cfg=self.minimal_cfg(), strict=False)
+        self.assertFalse(result["ok"], "图表部件里的禁词必须被扫描到")
+        self.assertTrue(any("主档" in p for p in result["problems"]), result["problems"])
+
+        # docProps/custom.xml 同口径
+        path2 = self.book("自定义.xlsx", {"对账": [["说明"], ["正常文案"]]})
+        with zipfile.ZipFile(path2) as zf:
+            items2 = {n: zf.read(n) for n in zf.namelist()}
+        items2["docProps/custom.xml"] = (
+            '<?xml version="1.0"?><Properties xmlns:vt="x">'
+            '<property name="来源"><vt:lpwstr>取自挂账表导出</vt:lpwstr></property>'
+            "</Properties>").encode("utf-8")
+        with zipfile.ZipFile(path2, "w", zipfile.ZIP_DEFLATED) as zf:
+            for name, data in items2.items():
+                zf.writestr(name, data)
+        result2 = scan(str(path2), cfg=self.minimal_cfg(), strict=False)
+        self.assertFalse(result2["ok"], "custom.xml 里的禁词必须被扫描到")
 
 
 if __name__ == "__main__":

@@ -572,12 +572,15 @@ def _render_sheet_raster(ws, font_path, target_w, target_h):
     from PIL import Image, ImageDraw, ImageFont
 
     _warn_section_merges(ws)
-    (r0, c0, r1, c1), xs0, ys0, W0, H0 = _grid(ws)
+    (r0, c0, r1, c1), xs0, ys0, W0, H0, hidden_cols, hidden_rows = _grid(ws)
     lw = W0 / 0.75
     lh = H0 * (96.0 / 72.0)
     s = min(float(target_w) / lw, float(target_h) / lh)
-    col_w = {c: (xs0[c + 1] - xs0[c]) / 0.75 * s for c in range(c0, c1 + 1)}
-    row_h = {r: (ys0[r + 1] - ys0[r]) * (96.0 / 72.0) * s for r in range(r0, r1 + 1)}
+    # 隐藏行/列与 vector 语义一致：宽度归零并跳过绘制（修复 5/7 元组解包崩溃）
+    col_w = {c: (0.0 if c in hidden_cols else (xs0[c + 1] - xs0[c]) / 0.75 * s)
+             for c in range(c0, c1 + 1)}
+    row_h = {r: (0.0 if r in hidden_rows else (ys0[r + 1] - ys0[r]) * (96.0 / 72.0) * s)
+             for r in range(r0, r1 + 1)}
     xs, ys = {c0: 0.0}, {r0: 0.0}
     for c in range(c0, c1 + 1):
         xs[c + 1] = xs[c] + col_w[c]
@@ -618,6 +621,12 @@ def _render_sheet_raster(ws, font_path, target_w, target_h):
     def _wl(t, ft, avail_w):
         out, cur = [], ""
         for ch in str(t):
+            if ch == "\n":
+                # 单元格内的硬换行：单独成行。否则 \n 会混进行内，后续
+                # draw.textlength(line) 对多行文本直接 ValueError（raster 必崩）。
+                out.append(cur)
+                cur = ""
+                continue
             if draw.textlength(cur + ch, font=ft) <= avail_w or not cur:
                 cur += ch
                 continue
@@ -637,10 +646,10 @@ def _render_sheet_raster(ws, font_path, target_w, target_h):
 
     line_w = max(1, int(round(s)))
     for r in range(r0, r1 + 1):
-        if r not in filled_rows:
+        if r not in filled_rows or r in hidden_rows:
             continue
         for c in range(c0, c1 + 1):
-            if (r, c) in hidden:
+            if (r, c) in hidden or c in hidden_cols:
                 continue
             rg = merged_at.get((r, c))
             er = rg.max_row if rg else r

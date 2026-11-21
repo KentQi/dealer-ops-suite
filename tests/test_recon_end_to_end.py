@@ -85,7 +85,7 @@ class ConsignmentWorkbookTest(unittest.TestCase):
         self._tmp.cleanup()
 
     def run_engine(self, *, sales_rows=None, inventory_qty=37, authorization=None,
-                   statement_no=None, cfg_out=None, expect=0):
+                   statement_no=None, cfg_out=None, expect=0, v17=False):
         workbook(self.sales, {"10月销售": sales_rows or self.rows})
         wb = openpyxl.load_workbook(self.inventory)
         wb["库存"]["E2"] = inventory_qty
@@ -100,7 +100,9 @@ class ConsignmentWorkbookTest(unittest.TestCase):
             "period": {"start": "2026-10-01", "end": "2026-10-31", "asof": "2026-10-31"},
             "base_dir": str(self.base), "master_path": str(self.master),
             "sources": {"jia": self.jia.name, "sales": self.sales.name, "inventory": self.inventory.name},
-            "out_file": str(self.out), "overwrite": True, "v17": {"enabled": False},
+            "out_file": str(self.out), "overwrite": True,
+            "v17": {"enabled": bool(v17), "koujing_path": str(self.koujing_path)} if v17
+            else {"enabled": False},
         }
         if authorization is not None:
             cfg["variance_authorization"] = authorization
@@ -407,8 +409,23 @@ class ConsignmentWorkbookTest(unittest.TestCase):
         self.assertFalse((self.base / "_复核记录" / "复核锁.json").exists())
 
     def test_legacy_inline_rule_result_packet_still_applies(self):
-        # 旧格式（rule_result 整体内联的历史归档包）不做侧车校验，仍可 --apply
-        result, _writeback, _run = self.run_engine()
+        # 旧格式（rule_result 整体内联的历史归档包）不做侧车校验，仍可 --apply。
+        # 真实流程对齐（T013）：复核发生在 apply_v17 渲染与门禁之后——原始引擎簿含
+        # 「请在挂账表补…」类内部文案，--apply 终态复扫会正确拦截；先渲染定稿再验兼容。
+        result, _writeback, _run = self.run_engine(v17=True)
+        cfg_path = self.base / "cfg_v17.json"
+        cfg_path.write_text(json.dumps({
+            "business_type": "consignment",
+            "koujing": self.koujing_record,
+            "period": {"start": "2026-10-01", "end": "2026-10-31", "asof": "2026-10-31"},
+            "base_dir": str(self.base), "master_path": str(self.master),
+            "out_file": str(self.out), "overwrite": True,
+            "v17": {"enabled": True, "mode": "full"},
+        }, ensure_ascii=False), encoding="utf-8")
+        v17_run = subprocess.run([sys.executable, str(SCRIPTS / "apply_v17.py"),
+                                  "--cfg", str(cfg_path)],
+                                 cwd=ROOT, text=True, capture_output=True, timeout=30)
+        self.assertEqual(v17_run.returncode, 0, v17_run.stdout + v17_run.stderr)
         report_path = self.base / "report.json"
         packet = self._packet_with_credential(self.base / "legacy_packet.json")
         legacy = dict(packet)

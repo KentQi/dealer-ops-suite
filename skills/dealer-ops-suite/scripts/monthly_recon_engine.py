@@ -432,18 +432,42 @@ def main():
     result_path = os.path.join(base, "_结算结果.json")
     writeback_path = os.path.join(base, "_回写.json")
     json_write(writeback_path, writeback)
+
+    # 对外文案门禁与铺货同权（T013）：先清文档属性（剥时间戳）、扫禁词，全部通过后
+    # 才以最终字节计算凭证哈希并落盘——凭证里的 workbook 哈希因此与门禁状态同源。
+    try:
+        from check_public_copy import clean_properties, scan as _copy_scan
+    except ImportError as _gate_import_error:
+        sys.stderr.write("[中止] 对外文案门禁需要 check_public_copy.py（%s）\n" % _gate_import_error)
+        sys.exit(1)
+    clean_properties(out_path)
+    gate_state = {"ran": True, "ok": None, "scanned_strings": 0, "skipped": False}
+    try:
+        _gate = _copy_scan(out_path, cfg=cfg, strict=False)
+    except SystemExit:
+        sys.exit(1)
+    gate_state["scanned_strings"] = _gate["scanned_strings"]
+    gate_state["ok"] = not _gate["problems"]
+    final_sha = workbook_sha256(out_path)
+
     json_write(result_path, {
         "schema": "dealer-ops/settlement-result@1", "business_type": business_type,
-        "workbook": {"path": os.path.abspath(out_path), "sha256": workbook_sha},
+        "workbook": {"path": os.path.abspath(out_path), "sha256": final_sha},
         "rule_result": jsonable(result), "writeback": writeback, "writeback_path": writeback_path,
         # 月结链路不加载口径问卡（load_master 仅 consignment 注入 koujing），凭证显式置 null。
         "koujing": None,
+        "gate": dict(gate_state),
         "master": {"path": os.path.abspath(cfg["master_path"]),
                    "sha256": workbook_sha256(cfg["master_path"])},
         "sources": {role: {"path": os.path.abspath(sources[role]),
                            "sha256": workbook_sha256(sources[role])}
                     for role in ("receipts", "returns", "sales")},
     })
+    if _gate["problems"]:
+        sys.stderr.write("[对外门禁未通过] 不交付。\n")
+        for p in _gate["problems"]:
+            sys.stderr.write("  · " + p + "\n")
+        sys.exit(1)
     emit("SAVED: " + out_path)
     emit("RESULT: " + result_path)
     emit("WRITEBACK: " + writeback_path)

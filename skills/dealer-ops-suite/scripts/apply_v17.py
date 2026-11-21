@@ -406,6 +406,31 @@ def refresh_settlement_result(workbook_path):
     return result_path
 
 
+def _record_gate(workbook_path, gate_state):
+    """把对外文案门禁的运行结果写进结算结果凭证（--no-gate 时显式记录 skipped）。
+
+    门禁状态进凭证后，下游复核链与 --check 才有可校验的留痕；--no-gate 的
+    产物因此无法伪装成已过闸（T013 审计：--no-gate 逃逸实锤的机制性收口）。
+    """
+    result_path = os.path.join(os.path.dirname(os.path.abspath(workbook_path)), "_结算结果.json")
+    if not os.path.exists(result_path):
+        return
+    try:
+        with open(result_path, encoding="utf-8") as handle:
+            document = json.load(handle)
+        if not isinstance(document, dict):
+            return
+        document["gate"] = dict(gate_state)
+        temp = result_path + ".tmp"
+        with open(temp, "w", encoding="utf-8") as handle:
+            json.dump(document, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+        os.replace(temp, result_path)
+    except (OSError, ValueError):
+        # 凭证留痕失败不阻断主流程：apply_review 落盘前的终态复扫仍会兜底拦截。
+        sys.stderr.write("[提示] 门禁状态未能写入结算结果凭证：%s\n" % result_path)
+
+
 def main():
     ap = argparse.ArgumentParser(description="v1.7 附表渲染与交付门禁")
     ap.add_argument("--cfg", required=True, help="RECON_CFG JSON 文件路径")
@@ -504,6 +529,7 @@ def main():
         sys.stderr.write("[中止] 附表已保存，但结算结果凭证同步失败，禁止交付：%s\n" % exc)
         return 1
 
+    gate_state = {"ran": False, "ok": None, "scanned_strings": 0, "skipped": True}
     if not a.no_gate:
         try:
             result = scan(out, cfg=cfg, baseline=gate_baseline, strict=False)
@@ -514,13 +540,18 @@ def main():
             for p in result["problems"]:
                 sys.stderr.write("  · " + p + "\n")
             return 1
+        gate_state = {"ran": True, "ok": True,
+                      "scanned_strings": result["scanned_strings"], "skipped": False}
         print(json.dumps({"ok": True, "book": os.path.abspath(out),
                           "mode": mode, "expiry_enabled": expiry_on,
                           "expiry_items": n09, "gate": result["scanned_strings"]},
                          ensure_ascii=False))
     else:
-        print(json.dumps({"ok": True, "book": os.path.abspath(out), "mode": mode},
+        # 调试开关：产物门禁状态显式留痕（凭证 gate.ran=False），下游复核链按裁决拒绝交付。
+        print(json.dumps({"ok": True, "book": os.path.abspath(out), "mode": mode,
+                          "gate": "skipped"},
                          ensure_ascii=False))
+    _record_gate(out, gate_state)
 
     if v17.get("pdf"):
         try:

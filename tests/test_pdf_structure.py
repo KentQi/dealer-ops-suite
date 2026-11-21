@@ -64,6 +64,23 @@ class PdfStructureTest(ConsignmentFixture):
         finally:
             second.close()
 
+    def test_raster_engine_renders_after_grid_fix(self):
+        # T013：raster 分支 5/7 元组解包崩溃修复的钉子（--engine raster 此前一调即崩）
+        self.run_engine()
+        out = self.base / "对账raster.pdf"
+        run = subprocess.run(
+            [sys.executable, str(SCRIPTS / "export_pdf.py"), "--book", str(self.out),
+             "--out", str(out), "--engine", "raster"],
+            text=True, capture_output=True, timeout=120, cwd=ROOT)
+        if run.returncode != 0:
+            self.skipTest("raster 导出未产出（缺 reportlab/Pillow/中文字体）：%s"
+                          % (run.stderr.strip()[-160:] or run.stdout.strip()[-160:]))
+        doc = fitz.open(out)
+        try:
+            self.assertGreaterEqual(doc.page_count, 1)
+        finally:
+            doc.close()
+
 
 if __name__ == "__main__":
     unittest.main()

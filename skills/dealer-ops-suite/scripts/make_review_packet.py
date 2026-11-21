@@ -1039,6 +1039,19 @@ def build_packet(workbook_path, master_path=None, cfg_path=None, out_path=None):
             warnings.append("工作簿已含「%s」表；复核包基于当前文件生成，重新复核请确认被复核版本"
                             % REVIEW_SHEET)
 
+        # 对外文案门禁状态透传（T013）：凭证缺失/未跑/不通过都在复核包留痕并警告——
+        # --no-gate 产物由此显性化；强制拦截由 apply_review 落盘前的终态复扫执行。
+        if isinstance(settlement_document, dict):
+            gate = settlement_document.get("gate")
+            if not isinstance(gate, dict) or not gate.get("ran"):
+                warnings.append("结算结果凭证未携带对外文案门禁通过记录（旧格式或 --no-gate 产物）；"
+                                "复核落盘时会强制复扫，不合规仍会被拒绝交付")
+            elif not gate.get("ok"):
+                warnings.append("结算结果凭证记录对外文案门禁未通过；复核落盘时会强制复扫拦截")
+            packet_gate = gate if isinstance(gate, dict) else None
+        else:
+            packet_gate = None
+
         sheets = [{"name": ws.title, "rows": ws.max_row, "cols": ws.max_column}
                   for ws in wb.worksheets]
     finally:
@@ -1055,6 +1068,9 @@ def build_packet(workbook_path, master_path=None, cfg_path=None, out_path=None):
         # 无凭证模式或月结（凭证 koujing=null）时为 None，消费端按缺席跳过。
         "koujing": settlement_document.get("koujing")
         if isinstance(settlement_document, dict) else None,
+        # 对外文案门禁状态（T013）：凭证留痕透传；缺失/未跑已在 warnings 显性化，
+        # 强制拦截由 apply_review 落盘前的终态复扫执行。
+        "gate": packet_gate,
         "period": period,
         "asof": asof,
         "sheets": sheets,

@@ -74,13 +74,48 @@ def _all_strings(wb):
         yield "定义名称", str(name)
 
 
-def _core_props(path):
+_CORE_AUTHORED_TAGS = ("dc:title", "dc:subject", "dc:creator", "cp:lastModifiedBy",
+                       "dc:keywords", "dc:description", "cp:category")
+
+
+def _doc_props_strings(path):
+    """docProps 与图表部件里**人写的属性值**（title/creator/keywords/图表标题…）。
+
+    机器易变状态不进扫描串：dcterms:created/modified 时间戳、cp:revision 等
+    不是对外文案，且 ISO 时间戳会以约 3.7% 概率偶然命中「1:1」类禁词子串
+    （2026-11-21 三方独立审计发现的 flaky 根因）——在采集源头排除，整类误报
+    不复存在。图表/绘图 XML 与 docProps/custom.xml 同为作者文字承载部件，
+    一并纳入（此前是可藏匿禁词的扫描盲区）。
+    """
     out = []
     try:
         with zipfile.ZipFile(path) as zf:
-            for member in ("docProps/core.xml", "docProps/app.xml"):
-                if member in zf.namelist():
-                    out.append((member, zf.read(member).decode("utf-8", "ignore")))
+            names = zf.namelist()
+            if "docProps/core.xml" in names:
+                raw = zf.read("docProps/core.xml").decode("utf-8", "ignore")
+                for tag in _CORE_AUTHORED_TAGS:
+                    m = re.search(r"<%s[^>]*>(.*?)</%s>" % (tag, tag), raw, re.S)
+                    if m and m.group(1).strip():
+                        out.append(("docProps/core.xml:%s" % tag, m.group(1)))
+            if "docProps/app.xml" in names:
+                raw = zf.read("docProps/app.xml").decode("utf-8", "ignore")
+                for tag in ("Application", "Company"):
+                    m = re.search(r"<%s[^>]*>(.*?)</%s>" % (tag, tag), raw, re.S)
+                    if m and m.group(1).strip():
+                        out.append(("docProps/app.xml:%s" % tag, m.group(1)))
+            for member in names:
+                if member.startswith("xl/charts/") and member.endswith(".xml"):
+                    raw = zf.read(member).decode("utf-8", "ignore")
+                    texts = re.findall(r"<a:t>(.*?)</a:t>", raw, re.S)
+                    if texts:
+                        out.append((member, "\n".join(texts)))
+            if "docProps/custom.xml" in names:
+                raw = zf.read("docProps/custom.xml").decode("utf-8", "ignore")
+                pairs = re.findall(r"<vt:lpwstr>(.*?)</vt:lpwstr>|<vt:lpstr>(.*?)</vt:lpstr>",
+                                   raw, re.S)
+                texts = [a or b for a, b in pairs]
+                if texts:
+                    out.append(("docProps/custom.xml", "\n".join(texts)))
     except (zipfile.BadZipFile, OSError):
         pass
     return out
@@ -124,8 +159,8 @@ def scan(path, cfg=None, baseline=None, strict=True):
     problems = []
     wb = openpyxl.load_workbook(path, data_only=False)
     strings = list(_all_strings(wb))
-    for member, raw in _core_props(path):
-        strings.append((member, raw))
+    doc_props = _doc_props_strings(path)
+    strings.extend(doc_props)
 
     for item in copy["l1_banned"]:
         pat = item["pattern"]
@@ -148,11 +183,13 @@ def scan(path, cfg=None, baseline=None, strict=True):
                                 (term, len(hits), hits[0][0]))
                 break
 
-    for member, raw in _core_props(path):
-        for tag in ("dc:creator", "cp:lastModifiedBy"):
-            m = re.search(r"<%s[^>]*>(.*?)</%s>" % (tag, tag), raw, re.S)
-            if m and m.group(1).strip() not in ("", "None"):
-                problems.append("A4 文档属性 %s 残留「%s」" % (tag, m.group(1)[:40]))
+    for loc, val in doc_props:
+        # loc 形如 docProps/core.xml:dc:creator——后缀匹配取属性（rsplit 会把
+        # dc:creator 的冒号一并切开）；报错文案保留完整属性名。
+        if loc.endswith((":dc:creator", ":cp:lastModifiedBy")) \
+                and val.strip() not in ("", "None"):
+            prop = loc.split(":", 1)[-1]
+            problems.append("A4 文档属性 %s 残留「%s」" % (prop, val[:40]))
 
     sm = dec.get("sheet_map") or {}
     if sm:

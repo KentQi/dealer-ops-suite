@@ -306,6 +306,52 @@ class PipelineGateTest(ConsignmentFixture):
         self.assertNotEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertIn("对外门禁未通过", run.stderr)
 
+    def test_no_gate_output_cannot_reach_delivery(self):
+        # --no-gate 逃逸关闭（T013 审计实锤的裁决执行机制）：禁词簿 + --no-gate 出账 →
+        # 回执显式 gate=skipped → 复核包显性化警告 → apply_review 终态复扫拒绝交付
+        _run, cfg = self.run_engine()
+        wb = openpyxl.load_workbook(self.out)
+        wb["01-对账单"]["H60"] = "补充说明：本表数量取自挂账表"
+        wb.save(self.out)
+        wb.close()
+        run = self.run_v17(self.dump_cfg(cfg), "--no-gate")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertEqual(json.loads(run.stdout)["gate"], "skipped")
+
+        sys.path.insert(0, str(SCRIPTS))
+        from make_review_packet import build_packet
+        packet = build_packet(str(self.out), str(self.master))
+        # 凭证把 ran=False 原样透传（留痕），复核包警告显性化逃逸
+        self.assertIsNotNone(packet["gate"])
+        self.assertFalse(packet["gate"]["ran"], "逃逸产物不得携带通过态")
+        self.assertTrue(any("门禁" in w for w in packet["warnings"]), packet["warnings"])
+
+        report = self.root / "report.json" if hasattr(self, "root") else self.base / "report.json"
+        report.write_text(json.dumps({
+            "schema": "dealer-ops/review-report@1",
+            "reviewer": {"name": "测试复核", "model": "test"},
+            "reviewed_at": "2026-11-21T08:00:00+08:00",
+            "workbook_sha256": __import__("hashlib").sha256(self.out.read_bytes()).hexdigest(),
+            "verdict": "通过",
+            "checklist": [{"id": "R%d" % i, "result": "通过", "note": "已核对"}
+                          for i in range(1, 11)],
+            "findings": [], "summary": "复核通过",
+            "period": {"start": "2026-10-01", "end": "2026-10-31"},
+        }, ensure_ascii=False), encoding="utf-8")
+        packet_path = self.base / "packet.json"
+        packet_path.write_text(json.dumps(packet, ensure_ascii=False, indent=2) + "\n",
+                               encoding="utf-8")
+        # 侧车与包同放（apply_review 按包位置解析 _external）
+        import shutil
+        default_sidecar = self.base / "_复核记录" / packet["rule_result"]["_external"]
+        shutil.copy(default_sidecar, self.base / packet["rule_result"]["_external"])
+        apply_run = subprocess.run(
+            [sys.executable, str(SCRIPTS / "apply_review.py"), str(self.out),
+             str(report), "--packet", str(packet_path), "--apply"],
+            cwd=ROOT, text=True, capture_output=True, timeout=30)
+        self.assertNotEqual(apply_run.returncode, 0, apply_run.stdout + apply_run.stderr)
+        self.assertIn("对外门禁未通过", apply_run.stdout + apply_run.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
